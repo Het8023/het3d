@@ -2,14 +2,12 @@ import { cloneData, flattenModels } from "./sceneObjects";
 
 export function defaultHttpsProcessor() {
     return `function handleMessage(e) {
-    const data = e?.data ?? e
-    const list = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : []
-    return list
+    return Array.isArray(e) ? e
         .filter((item) => item?.dataId && Object.prototype.hasOwnProperty.call(item, "value"))
         .map((item) => ({
             dataId: String(item.dataId),
             value: item.value,
-        }))
+        })) : []
 }`;
 }
 
@@ -30,21 +28,14 @@ export function normalizeHttpsProcessorText(value) {
 
 export function normalizeHttpsConfigData(config = {}) {
     const next = { ...config };
-    const hasQuery = Object.prototype.hasOwnProperty.call(next, "query");
     next.enabled = Boolean(next.enabled);
     next.method = ["GET", "POST"].includes(String(next.method).toUpperCase())
         ? String(next.method).toUpperCase()
         : "GET";
     next.url = String(next.url || "").trim();
-    const normalizedBody = normalizeHttpsJsonText(next.body);
-    delete next.headers;
-    if (!hasQuery && next.method === "GET" && isMeaningfulJsonText(normalizedBody)) {
-        next.query = normalizedBody;
-        next.body = "{}";
-    } else {
-        next.query = normalizeHttpsJsonText(next.query);
-        next.body = normalizedBody;
-    }
+    next.headers = normalizeHttpsJsonText(next.headers);
+    next.query = normalizeHttpsJsonText(next.query);
+    next.body = normalizeHttpsJsonText(next.body);
     next.processor = normalizeHttpsProcessorText(next.processor);
     next.intervalSeconds = Math.max(Number(next.intervalSeconds) || 10, 1);
     return next;

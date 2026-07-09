@@ -5,6 +5,7 @@ export type Het3dMode = "edit" | "view" | string;
 export interface Het3dRequestOptions {
     method?: "GET" | "POST" | string;
     url: string;
+    headers?: Record<string, unknown>;
     query?: Record<string, unknown>;
     body?: unknown;
     timeout?: number;

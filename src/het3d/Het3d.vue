@@ -1840,6 +1840,7 @@ function getCanvasHttpsPollingSignature(config) {
         enabled: Boolean(config.enabled),
         url: config.url,
         method: config.method,
+        headers: config.headers,
         query: config.query,
         body: config.body,
         processor: config.processor,
@@ -1881,38 +1882,72 @@ async function requestSceneData(options) {
     return defaultRequestHandler(options);
 }
 
-async function defaultRequestHandler({ method, url, query = {}, body = {}, timeout = 10000 }) {
+async function defaultRequestHandler({
+    method,
+    url,
+    headers,
+    query,
+    body,
+    timeout = 10000,
+}) {
     const requestMethod = method === "POST" ? "POST" : "GET";
+    const requestHeaders = normalizeRequestHeaders(headers);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
-    const requestUrl = requestMethod === "GET" ? appendQueryToUrl(url, query) : url;
+    const requestUrl = appendQueryToUrl(url, query);
+    const requestOptions = {
+        method: requestMethod,
+        signal: controller.signal,
+    };
+    if (Object.keys(requestHeaders).length) {
+        requestOptions.headers = requestHeaders;
+    }
+    if (requestMethod !== "GET" && hasRequestValue(body)) {
+        requestOptions.body = stringifyRequestBody(body);
+    }
+
     try {
-        const response = await fetch(requestUrl, {
-            method: requestMethod,
-            headers:
-                requestMethod === "POST"
-                    ? {
-                          "Content-Type": "application/json",
-                      }
-                    : undefined,
-            body: requestMethod === "POST" ? JSON.stringify(body || {}) : undefined,
-            signal: controller.signal,
-        });
-        const contentType = response.headers.get("content-type") || "";
-        const data = contentType.includes("application/json")
-            ? await response.json()
-            : await response.text();
+        const response = await fetch(requestUrl, requestOptions);
+        const data = await readResponseData(response);
         if (!response.ok) {
             throw new Error(`${requestMethod} ${response.status}`);
         }
-        return {
-            data,
-            status: response.status,
-            response,
-        };
+        return data;
     } finally {
         clearTimeout(timeoutId);
     }
+}
+
+function normalizeRequestHeaders(headers = {}) {
+    if (!headers || typeof headers !== "object" || Array.isArray(headers)) return {};
+    return Object.fromEntries(
+        Object.entries(headers)
+            .filter(([, value]) => value !== undefined && value !== null)
+            .map(([key, value]) => [key, String(value)]),
+    );
+}
+
+async function readResponseData(response) {
+    const text = await response.text();
+    if (!text) return null;
+    try {
+        return JSON.parse(text);
+    } catch {
+        return text;
+    }
+}
+
+function stringifyRequestBody(body) {
+    return typeof body === "string" ? body : JSON.stringify(body);
+}
+
+function hasRequestValue(value) {
+    if (value === undefined) return false;
+    if (value === null) return true;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === "object") return Object.keys(value).length > 0;
+    if (typeof value === "string") return value.length > 0;
+    return true;
 }
 
 function appendQueryToUrl(url, query = {}) {
@@ -1940,6 +1975,11 @@ async function runCanvasHttpsRequest() {
     const config = normalizeHttpsConfigData(sceneState.httpsConfig || {});
     if (!config.enabled || !config.url) return;
 
+    const headersResult = parseHttpsJsonText(config.headers, "Headers", { objectOnly: true });
+    if (!headersResult.ok) {
+        console.warn(headersResult.message);
+        return;
+    }
     const queryResult = parseHttpsJsonText(config.query, "Query", { objectOnly: true });
     if (!queryResult.ok) {
         console.warn(queryResult.message);
@@ -1953,17 +1993,21 @@ async function runCanvasHttpsRequest() {
 
     httpsRequestRunning = true;
     try {
-        const response = await requestSceneData({
+        const requestOptions = {
             method: config.method,
             url: config.url,
-            query: queryResult.value,
-            body: bodyResult.value,
             timeout: 10000,
-        });
-        const responseData =
-            response && Object.prototype.hasOwnProperty.call(response, "data")
-                ? response.data
-                : response;
+        };
+        if (hasRequestValue(headersResult.value)) {
+            requestOptions.headers = headersResult.value;
+        }
+        if (hasRequestValue(queryResult.value)) {
+            requestOptions.query = queryResult.value;
+        }
+        if (hasRequestValue(bodyResult.value)) {
+            requestOptions.body = bodyResult.value;
+        }
+        const responseData = await requestSceneData(requestOptions);
         const processedData = await runHttpsResponseProcessor(responseData, config.processor);
         const changes = applyProcessedDataToSceneBindings(sceneState, processedData);
         if (!initialValueChangeEventsExecuted) {

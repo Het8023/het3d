@@ -299,6 +299,7 @@ export function defaultHttpsConfig() {
         enabled: false,
         method: "GET",
         url: "",
+        headers: "{}",
         query: "{}",
         body: "{}",
         processor: defaultHttpsProcessor(),
@@ -312,14 +313,12 @@ function normalizeJsonText(value) {
 
 function defaultHttpsProcessor() {
     return `function handleMessage(e) {
-  const data = e?.data ?? e
-  const list = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : []
-  return list
+  return Array.isArray(e) ? e
     .filter((item) => item?.dataId && Object.prototype.hasOwnProperty.call(item, "value"))
     .map((item) => ({
       dataId: String(item.dataId),
       value: item.value,
-    }))
+    })) : []
 }`;
 }
 
@@ -436,7 +435,7 @@ export function normalizeScene(scene) {
     )
         ? String(next.httpsConfig.method).toUpperCase()
         : "GET";
-    delete next.httpsConfig.headers;
+    next.httpsConfig.headers = normalizeJsonText(next.httpsConfig.headers);
     next.httpsConfig.query = normalizeJsonText(next.httpsConfig.query);
     next.httpsConfig.body = normalizeJsonText(next.httpsConfig.body);
     next.httpsConfig.processor = normalizeProcessorText(next.httpsConfig.processor);

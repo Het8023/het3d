@@ -378,6 +378,7 @@ const sceneData = {
         enabled: false,
         method: "GET",
         url: "",
+        headers: "{}",
         query: "{}",
         body: "{}",
         processor: "",
@@ -565,6 +566,13 @@ const sceneData = {
         enabled: true,
         method: "GET",
         url: "/api/device/realtime",
+        headers: JSON.stringify(
+            {
+                "X-App-Id": "your-app-id",
+            },
+            null,
+            2,
+        ),
         query: JSON.stringify(
             {
                 projectId: "project_1",
@@ -576,7 +584,7 @@ const sceneData = {
         body: "{}",
         intervalSeconds: 5,
         processor: `function handleMessage(e) {
-  const list = Array.isArray(e?.data) ? e.data : [];
+  const list = Array.isArray(e) ? e : [];
   return list.map((item) => ({
     dataId: item.dataId,
     value: item.value,
@@ -593,8 +601,9 @@ const sceneData = {
 | `enabled`         | `boolean`          | 是否启用轮询。                                                                 |
 | `method`          | `"GET" \| "POST"`  | 只支持 `GET` 和 `POST`，其他值会按 `GET` 处理。                                |
 | `url`             | `string`           | 请求地址，可以是相对地址或完整 URL。                                           |
-| `query`           | `string \| object` | JSON 对象。`GET` 时会拼到 URL 查询参数中；`POST` 时也会传给 `requestHandler`。 |
-| `body`            | `string \| object` | JSON 值。默认 `fetch` 只会在 `POST` 时作为 JSON body 发送。                    |
+| `headers`         | `string \| object` | JSON 对象。请求头只来自该配置，不会默认添加 token 或业务请求头。               |
+| `query`           | `string \| object` | JSON 对象。非空时会拼到 URL 查询参数中，`GET` / `POST` 都生效。                |
+| `body`            | `string \| object` | JSON 值。非空且为 `POST` 时才作为请求体发送；请求头需要自行配置。              |
 | `processor`       | `string`           | 响应处理函数源码，必须返回 `{ dataId, value }[]`。                             |
 | `intervalSeconds` | `number`           | 轮询间隔秒数，最小为 1。                                                       |
 
@@ -605,6 +614,7 @@ httpsConfig: {
   enabled: true,
   method: "GET",
   url: "/api/device/realtime",
+  headers: {},
   query: {
     projectId: "project_1",
     deviceNos: ["AC001", "PUMP001"],
@@ -612,7 +622,7 @@ httpsConfig: {
   body: "{}",
   intervalSeconds: 5,
   processor: `function handleMessage(e) {
-    return e.data.map((item) => ({
+    return e.map((item) => ({
       dataId: item.dataId,
       value: item.value,
     }));
@@ -633,6 +643,9 @@ httpsConfig: {
   enabled: true,
   method: "POST",
   url: "/api/device/realtime",
+  headers: {
+    "Content-Type": "application/json",
+  },
   query: "{}",
   body: {
     projectId: "project_1",
@@ -640,7 +653,7 @@ httpsConfig: {
   },
   intervalSeconds: 5,
   processor: `function handleMessage(e) {
-    const rows = Array.isArray(e?.data?.records) ? e.data.records : [];
+    const rows = Array.isArray(e?.records) ? e.records : [];
     return rows.map((row) => ({
       dataId: row.dataId,
       value: row.value,
@@ -660,41 +673,33 @@ Content-Type: application/json
 
 ### requestHandler
 
-如果接口需要 token、自定义 headers、统一错误处理或使用业务项目已有请求库，传入 `requestHandler`：
+如果宿主项目需要使用已有请求库或统一错误处理，传入 `requestHandler`。组件只转发
+`httpsConfig` 中配置的 `headers`、`query` 和 `body`，不会自行读取本地 token 或添加特定服务的请求头：
 
 ```js
 async function requestHandler(options) {
-    const { method, url, query, body, timeout } = options;
+    const { method, url, headers, query, body, timeout } = options;
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), timeout || 10000);
 
     try {
         const requestUrl = new URL(url, window.location.origin);
-        if (method !== "POST") {
-            Object.entries(query || {}).forEach(([key, value]) => {
-                if (Array.isArray(value)) {
-                    value.forEach((item) => requestUrl.searchParams.append(key, String(item)));
-                } else if (value !== undefined) {
-                    requestUrl.searchParams.set(key, value == null ? "" : String(value));
-                }
-            });
-        }
+        Object.entries(query || {}).forEach(([key, value]) => {
+            if (Array.isArray(value)) {
+                value.forEach((item) => requestUrl.searchParams.append(key, String(item)));
+            } else if (value !== undefined) {
+                requestUrl.searchParams.set(key, value == null ? "" : String(value));
+            }
+        });
 
         const response = await fetch(requestUrl.toString(), {
             method: method === "POST" ? "POST" : "GET",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${localStorage.getItem("token") || ""}`,
-            },
-            body: method === "POST" ? JSON.stringify(body || {}) : undefined,
+            headers,
+            body: method === "POST" && body !== undefined ? JSON.stringify(body) : undefined,
             signal: controller.signal,
         });
 
-        return {
-            data: await response.json(),
-            status: response.status,
-            response,
-        };
+        return await response.json();
     } finally {
         window.clearTimeout(timer);
     }
@@ -707,13 +712,16 @@ async function requestHandler(options) {
 {
   method: "GET" | "POST",
   url: "/api/device/realtime",
-  query: {},
-  body: {},
+  headers?: {},
+  query?: {},
+  body?: {},
   timeout: 10000
 }
 ```
 
-返回值可以是 `{ data, status, response }`，也可以直接返回接口数据。若返回对象包含 `data` 字段，后续 `processor` 接收到的是 `data`；否则接收到整个返回值。
+`headers`、`query` 和 `body` 只有在对应配置不为空时才会传入。`requestHandler` 返回什么，
+`processor` 的 `e` 就接收到什么。内置 `fetch` 返回的 `e` 是接口响应体本身，JSON 文本会解析为对象或数组，
+非 JSON 文本会保持字符串，不会自动读取 `data` 字段。
 
 ### processor
 
@@ -738,7 +746,7 @@ async function requestHandler(options) {
 
 ```js
 processor: `function handleMessage(e) {
-  const rows = Array.isArray(e?.data) ? e.data : [];
+  const rows = Array.isArray(e) ? e : [];
   return rows
     .filter((item) => item.dataId && Object.prototype.hasOwnProperty.call(item, "value"))
     .map((item) => ({
@@ -752,7 +760,11 @@ processor: `function handleMessage(e) {
 
 ```js
 processor: `(response) => {
-  const list = Array.isArray(response?.data) ? response.data : [];
+  const list = Array.isArray(response)
+    ? response
+    : Array.isArray(response?.records)
+      ? response.records
+      : [];
   return list.map((item) => ({
     dataId: item.dataId,
     value: item.value,
@@ -764,7 +776,7 @@ processor: `(response) => {
 
 | 问题             | 处理方式                                                          |
 | ---------------- | ----------------------------------------------------------------- |
-| 需要传 headers   | 不要写在 `httpsConfig`，通过 `requestHandler` 统一处理。          |
+| 需要传 headers   | 写在 `httpsConfig.headers`，或通过自定义 `requestHandler` 处理。 |
 | `query` 解析失败 | `query` 必须是 JSON 对象，不支持数组作为根值。                    |
 | 轮询没有执行     | 确认 `mode="view"`、`enabled=true`、`url` 非空。                  |
 | 场景值没更新     | 确认 `processor` 返回数组，且 `dataId` 等于 `dataBindings[].id`。 |
