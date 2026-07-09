@@ -1,0 +1,50 @@
+{
+    "name": "het3d",
+    "version": "0.1.0",
+    "description": "A Vue 3 and Three.js based 3D scene editor/viewer component.",
+    "type": "module",
+    "main": "./dist/het3d.umd.cjs",
+    "module": "./dist/het3d.es.js",
+    "types": "./src/het3d/index.d.ts",
+    "style": "./dist/het3d.css",
+    "files": [
+        "dist",
+        "src/het3d/index.d.ts"
+    ],
+    "sideEffects": [
+        "*.css",
+        "**/*.css"
+    ],
+    "exports": {
+        ".": {
+            "types": "./src/het3d/index.d.ts",
+            "import": "./dist/het3d.es.js",
+            "require": "./dist/het3d.umd.cjs"
+        },
+        "./style.css": "./dist/het3d.css"
+    },
+    "keywords": [
+        "het3d",
+        "three",
+        "threejs",
+        "vue3",
+        "3d",
+        "editor"
+    ],
+    "license": "MIT",
+    "scripts": {
+        "build": "vite build --config vite.lib.config.js",
+        "build:lib": "vite build --config vite.lib.config.js",
+        "pack:check": "npm pack --dry-run"
+    },
+    "peerDependencies": {
+        "three": "^0.178.0",
+        "vue": "^3.5.0"
+    },
+    "devDependencies": {
+        "@vitejs/plugin-vue": "^5.2.4",
+        "three": "^0.178.0",
+        "vite": "^6.3.5",
+        "vue": "^3.5.17"
+    }
+}
