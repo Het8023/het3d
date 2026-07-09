@@ -4,6 +4,8 @@
 
 本包不包含登录页、路由、业务接口、demo 页面、内置资源库和项目应用壳。宿主项目需要自己提供场景数据、模型 URL、请求方法和业务弹窗。
 
+源码地址：[het3d](https://github.com/Het8023/het3d)
+
 ## 安装
 
 Vue 3 + Vite 项目中安装：
@@ -18,18 +20,17 @@ npm install het3d three vue
 
 ```vue
 <template>
-  <div class="viewer">
-    <Het3d
-      ref="het3dRef"
-      :scene-data="sceneData"
-      mode="view"
-      :asset-loader="loadAsset"
-      :request-handler="request"
-      @scene-ready="handleSceneReady"
-      @scene-change="handleSceneChange"
-      @message="handleMessage"
-    />
-  </div>
+    <div class="viewer">
+        <Het3d
+            ref="het3dRef"
+            :scene-data="sceneData"
+            mode="view"
+            :asset-loader="loadAsset"
+            :request-handler="request"
+            @scene-ready="handleSceneReady"
+            @scene-change="handleSceneChange"
+            @message="handleMessage" />
+    </div>
 </template>
 
 <script setup>
@@ -39,45 +40,45 @@ import "het3d/style.css";
 
 const het3dRef = ref(null);
 const sceneData = ref({
-  id: "scene_demo",
-  projectId: "project_demo",
-  models: [],
+    id: "scene_demo",
+    projectId: "project_demo",
+    models: [],
 });
 
 async function loadAsset(assetId) {
-  return {
-    id: assetId,
-    modelPath: `/models/${assetId}.glb`,
-  };
+    return {
+        id: assetId,
+        modelPath: `/models/${assetId}.glb`,
+    };
 }
 
 async function request(options) {
-  const response = await fetch(options.url, {
-    method: options.method || "GET",
-  });
-  return {
-    data: await response.json(),
-    status: response.status,
-  };
+    const response = await fetch(options.url, {
+        method: options.method || "GET",
+    });
+    return {
+        data: await response.json(),
+        status: response.status,
+    };
 }
 
 function handleSceneReady({ scene }) {
-  console.log("scene ready", scene);
+    console.log("scene ready", scene);
 }
 
 function handleSceneChange({ scene }) {
-  sceneData.value = scene;
+    sceneData.value = scene;
 }
 
 function handleMessage({ type, message, detail }) {
-  console.log(type, message, detail);
+    console.log(type, message, detail);
 }
 </script>
 
 <style scoped>
 .viewer {
-  width: 100%;
-  height: 100vh;
+    width: 100%;
+    height: 100vh;
 }
 </style>
 ```
@@ -95,35 +96,35 @@ createApp(App).use(Het3d).mount("#app");
 
 ## Props
 
-| Prop | 类型 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `sceneData` | `object \| null` | `null` | 直接传入场景数据，优先级最高。 |
-| `mode` | `"edit" \| "view" \| string` | `"edit"` | `edit` 支持选择、拖拽、导入、变换；`view` 支持预览事件和轮询数据。 |
-| `selectedIds` | `string[]` | `[]` | 外部受控选中对象 ID。 |
-| `sceneId` | `string` | `""` | 配合 `sceneLoader(sceneId)` 加载场景。 |
-| `projectId` | `string` | `""` | 配合 `projectSceneLoader(projectId)` 加载项目场景。 |
-| `sceneLoader` | `(sceneId) => Promise<object \| null>` | `null` | 根据场景 ID 返回场景数据。 |
-| `projectSceneLoader` | `(projectId) => Promise<object \| null>` | `null` | 根据项目 ID 返回场景数据。 |
-| `assetLoader` | `(assetId) => Promise<object \| null>` | `null` | 根据 `assetId` 返回模型资源。 |
-| `requestHandler` | `(options) => Promise<any>` | 内置 `fetch` | 预览态 HTTPS 轮询请求处理器。 |
-| `eventBus` | `Het3dEventBus` | 默认总线 | 自定义事件总线，多实例隔离时使用。 |
-| `devicePopoverComponent` | `Vue component` | `null` | 可选设备弹窗组件，需要暴露 `show`、`hide`、`setAnchor`。 |
-| `notify` | `({ type, message, detail }) => void` | `console` | 内部消息提示适配器。 |
-| `installGlobal` | `boolean` | `true` | 预览态是否挂载 `window.het3d`。 |
-| `dracoDecoderPath` | `string` | `"/draco/"` | DRACO decoder 目录。 |
+| Prop                     | 类型                                     | 默认值       | 说明                                                               |
+| ------------------------ | ---------------------------------------- | ------------ | ------------------------------------------------------------------ |
+| `sceneData`              | `object \| null`                         | `null`       | 直接传入场景数据，优先级最高。                                     |
+| `mode`                   | `"edit" \| "view" \| string`             | `"edit"`     | `edit` 支持选择、拖拽、导入、变换；`view` 支持预览事件和轮询数据。 |
+| `selectedIds`            | `string[]`                               | `[]`         | 外部受控选中对象 ID。                                              |
+| `sceneId`                | `string`                                 | `""`         | 配合 `sceneLoader(sceneId)` 加载场景。                             |
+| `projectId`              | `string`                                 | `""`         | 配合 `projectSceneLoader(projectId)` 加载项目场景。                |
+| `sceneLoader`            | `(sceneId) => Promise<object \| null>`   | `null`       | 根据场景 ID 返回场景数据。                                         |
+| `projectSceneLoader`     | `(projectId) => Promise<object \| null>` | `null`       | 根据项目 ID 返回场景数据。                                         |
+| `assetLoader`            | `(assetId) => Promise<object \| null>`   | `null`       | 根据 `assetId` 返回模型资源。                                      |
+| `requestHandler`         | `(options) => Promise<any>`              | 内置 `fetch` | 预览态 HTTPS 轮询请求处理器。                                      |
+| `eventBus`               | `Het3dEventBus`                          | 默认总线     | 自定义事件总线，多实例隔离时使用。                                 |
+| `devicePopoverComponent` | `Vue component`                          | `null`       | 可选设备弹窗组件，需要暴露 `show`、`hide`、`setAnchor`。           |
+| `notify`                 | `({ type, message, detail }) => void`    | `console`    | 内部消息提示适配器。                                               |
+| `installGlobal`          | `boolean`                                | `true`       | 预览态是否挂载 `window.het3d`。                                    |
+| `dracoDecoderPath`       | `string`                                 | `"/draco/"`  | DRACO decoder 目录。                                               |
 
 加载优先级为：`sceneData` > `sceneId + sceneLoader` > `projectId + projectSceneLoader`。
 
 ## Events
 
-| Event | Payload | 说明 |
-| --- | --- | --- |
-| `scene-ready` | `{ scene }` | 场景加载并创建 Three.js 对象后触发。 |
-| `scene-change` | `{ scene }` | 编辑态对象、相机、灯光或画布配置变化时触发。 |
-| `select` | `{ ids, objects }` | 画布选中对象变化时触发。 |
-| `thumbnail-ready` | `{ thumbnail }` | 调用 `captureThumbnail()` 后触发。 |
-| `device-popover` | `{ object, event, payload, mode }` | 设备弹窗动作触发时发出。 |
-| `message` | `{ type, message, detail }` | 导入失败、事件执行失败等消息。 |
+| Event             | Payload                            | 说明                                         |
+| ----------------- | ---------------------------------- | -------------------------------------------- |
+| `scene-ready`     | `{ scene }`                        | 场景加载并创建 Three.js 对象后触发。         |
+| `scene-change`    | `{ scene }`                        | 编辑态对象、相机、灯光或画布配置变化时触发。 |
+| `select`          | `{ ids, objects }`                 | 画布选中对象变化时触发。                     |
+| `thumbnail-ready` | `{ thumbnail }`                    | 调用 `captureThumbnail()` 后触发。           |
+| `device-popover`  | `{ object, event, payload, mode }` | 设备弹窗动作触发时发出。                     |
+| `message`         | `{ type, message, detail }`        | 导入失败、事件执行失败等消息。               |
 
 ## Ref 方法
 
@@ -134,82 +135,82 @@ const api = het3dRef.value;
 const snapshot = api.getSceneSnapshot();
 ```
 
-| 方法 | 说明 |
-| --- | --- |
-| `loadScene(sceneId)` | 调用 `sceneLoader` 加载场景。 |
-| `reloadScene()` | 重新加载当前内存中的场景数据。 |
-| `getSceneSnapshot()` | 获取当前场景快照，会同步最新相机状态。 |
-| `captureThumbnail()` | 返回当前画布 PNG data URL，并触发 `thumbnail-ready`。 |
-| `resetCamera()` | 重置或自适应相机。 |
-| `focusSelection()` | 聚焦当前选中对象。 |
-| `selectAllSelectableObjects()` | 选中所有可选根对象。 |
-| `selectAllMeshes()` | 当前等同于 `selectAllSelectableObjects()`。 |
-| `setTransformMode(mode)` | 设置变换模式：`translate`、`rotate`、`scale`。 |
-| `addPrimitive(type)` | 添加基础对象：`box`、`sphere`、`cylinder`、`plane`。 |
-| `addObjectFromResource(resource, position?)` | 从资源描述添加对象。 |
-| `copySelectedObjects()` | 复制当前选中对象，返回数量。 |
-| `pasteCopiedObjects()` | 粘贴已复制对象，返回新增对象数组。 |
-| `importModelFile(file)` | 导入本地 `.glb/.gltf` 文件。 |
-| `updateSceneObject(objectData)` | 更新对象数据并同步 Three.js 对象。 |
-| `setObjectVisible(id, visible)` | 设置对象显示或隐藏。 |
-| `applyCanvasSettings(canvas)` | 应用画布设置。 |
-| `applyLightSettings(lights)` | 应用灯光设置。 |
-| `applyCameraSettings(camera)` | 应用相机设置。 |
-| `deleteObjects(ids)` | 删除指定对象。 |
-| `deleteSelected()` | 删除当前选中对象。 |
+| 方法                                         | 说明                                                  |
+| -------------------------------------------- | ----------------------------------------------------- |
+| `loadScene(sceneId)`                         | 调用 `sceneLoader` 加载场景。                         |
+| `reloadScene()`                              | 重新加载当前内存中的场景数据。                        |
+| `getSceneSnapshot()`                         | 获取当前场景快照，会同步最新相机状态。                |
+| `captureThumbnail()`                         | 返回当前画布 PNG data URL，并触发 `thumbnail-ready`。 |
+| `resetCamera()`                              | 重置或自适应相机。                                    |
+| `focusSelection()`                           | 聚焦当前选中对象。                                    |
+| `selectAllSelectableObjects()`               | 选中所有可选根对象。                                  |
+| `selectAllMeshes()`                          | 当前等同于 `selectAllSelectableObjects()`。           |
+| `setTransformMode(mode)`                     | 设置变换模式：`translate`、`rotate`、`scale`。        |
+| `addPrimitive(type)`                         | 添加基础对象：`box`、`sphere`、`cylinder`、`plane`。  |
+| `addObjectFromResource(resource, position?)` | 从资源描述添加对象。                                  |
+| `copySelectedObjects()`                      | 复制当前选中对象，返回数量。                          |
+| `pasteCopiedObjects()`                       | 粘贴已复制对象，返回新增对象数组。                    |
+| `importModelFile(file)`                      | 导入本地 `.glb/.gltf` 文件。                          |
+| `updateSceneObject(objectData)`              | 更新对象数据并同步 Three.js 对象。                    |
+| `setObjectVisible(id, visible)`              | 设置对象显示或隐藏。                                  |
+| `applyCanvasSettings(canvas)`                | 应用画布设置。                                        |
+| `applyLightSettings(lights)`                 | 应用灯光设置。                                        |
+| `applyCameraSettings(camera)`                | 应用相机设置。                                        |
+| `deleteObjects(ids)`                         | 删除指定对象。                                        |
+| `deleteSelected()`                           | 删除当前选中对象。                                    |
 
 ## 运行时 API
 
 预览态 `mode="view"` 且 `installGlobal=true` 时，组件会临时挂载：
 
 ```js
-window.het3d
+window.het3d;
 ```
 
 卸载组件时会恢复之前的 `window.het3d`。
 
-| 字段或方法 | 说明 |
-| --- | --- |
-| `het3d.data` | 当前场景完整快照，未加载时为 `null`。 |
-| `het3d.active` | 当前选中对象数组。 |
-| `het3d.setValue(payload)` | 按对象 ID 修改对象字段。 |
+| 字段或方法                         | 说明                                  |
+| ---------------------------------- | ------------------------------------- |
+| `het3d.data`                       | 当前场景完整快照，未加载时为 `null`。 |
+| `het3d.active`                     | 当前选中对象数组。                    |
+| `het3d.setValue(payload)`          | 按对象 ID 修改对象字段。              |
 | `het3d.showDevicePopover(options)` | 触发设备弹窗动作，返回 `true/false`。 |
-| `het3d.on(name, handler)` | 监听自定义事件，返回取消监听函数。 |
-| `het3d.off(name, handler)` | 移除自定义事件监听。 |
-| `het3d.once(name, handler)` | 只监听一次自定义事件。 |
-| `het3d.emit(name, payload)` | 发送自定义事件给外部监听者。 |
-| `het3d.utils.cloneData(value)` | 深拷贝工具。 |
+| `het3d.on(name, handler)`          | 监听自定义事件，返回取消监听函数。    |
+| `het3d.off(name, handler)`         | 移除自定义事件监听。                  |
+| `het3d.once(name, handler)`        | 只监听一次自定义事件。                |
+| `het3d.emit(name, payload)`        | 发送自定义事件给外部监听者。          |
+| `het3d.utils.cloneData(value)`     | 深拷贝工具。                          |
 
 示例：
 
 ```js
 het3d.setValue({
-  id: "obj_1",
-  name: "水泵 A",
-  positionX: 2,
-  materialColor: "#ff0000",
-  running: true,
+    id: "obj_1",
+    name: "水泵 A",
+    positionX: 2,
+    materialColor: "#ff0000",
+    running: true,
 });
 ```
 
 快捷字段会写入嵌套结构：
 
-| 快捷字段 | 实际字段 |
-| --- | --- |
-| `positionX/Y/Z` | `position.x/y/z` |
-| `rotationX/Y/Z` | `rotation.x/y/z` |
-| `scaleX/Y/Z` | `scale.x/y/z` |
-| `materialColor` | `material.color` |
+| 快捷字段         | 实际字段          |
+| ---------------- | ----------------- |
+| `positionX/Y/Z`  | `position.x/y/z`  |
+| `rotationX/Y/Z`  | `rotation.x/y/z`  |
+| `scaleX/Y/Z`     | `scale.x/y/z`     |
+| `materialColor`  | `material.color`  |
 | `materialSymbol` | `material.symbol` |
-| `materialLabel` | `material.label` |
-| `materialShape` | `material.shape` |
+| `materialLabel`  | `material.label`  |
+| `materialShape`  | `material.shape`  |
 
 对象事件自定义代码中会注入 `het3d`：
 
 ```js
 het3d.setValue({
-  id: object.id,
-  materialColor: "#00ff00",
+    id: object.id,
+    materialColor: "#00ff00",
 });
 ```
 
@@ -217,9 +218,9 @@ het3d.setValue({
 
 ```js
 context.het3d.showDevicePopover({
-  objectId: object.id,
-  deviceNo: "device_001",
-  popoverMode: "floating",
+    objectId: object.id,
+    deviceNo: "device_001",
+    popoverMode: "floating",
 });
 ```
 
@@ -227,15 +228,7 @@ context.het3d.showDevicePopover({
 
 ```js
 {
-  object,
-  object3d,
-  event,
-  trigger,
-  scene,
-  camera,
-  controls,
-  THREE,
-  het3d
+    (object, object3d, event, trigger, scene, camera, controls, THREE, het3d);
 }
 ```
 
@@ -247,7 +240,7 @@ context.het3d.showDevicePopover({
 
 ```js
 het3d.on("input-editor", (msg) => {
-  createTextEditor(msg);
+    createTextEditor(msg);
 });
 ```
 
@@ -280,12 +273,7 @@ het3d.on("input-editor", (msg) => {
 
 ```vue
 <template>
-  <Het3d
-    ref="het3dRef"
-    :scene-data="sceneData"
-    mode="view"
-    @scene-ready="handleSceneReady"
-  />
+    <Het3d ref="het3dRef" :scene-data="sceneData" mode="view" @scene-ready="handleSceneReady" />
 </template>
 
 <script setup>
@@ -296,17 +284,17 @@ const het3dRef = ref(null);
 let offInputEditor;
 
 function handleSceneReady() {
-  offInputEditor = het3dRef.value?.on("input-editor", (msg) => {
-    createTextEditor(msg);
-  });
+    offInputEditor = het3dRef.value?.on("input-editor", (msg) => {
+        createTextEditor(msg);
+    });
 }
 
 function createTextEditor({ object, params }) {
-  console.log("打开外部编辑器", object, params);
+    console.log("打开外部编辑器", object, params);
 }
 
 onBeforeUnmount(() => {
-  offInputEditor?.();
+    offInputEditor?.();
 });
 </script>
 ```
@@ -317,7 +305,7 @@ onBeforeUnmount(() => {
 import { het3dEventBus } from "het3d";
 
 const off = het3dEventBus.on("input-editor", (msg) => {
-  createTextEditor(msg);
+    createTextEditor(msg);
 });
 ```
 
@@ -325,7 +313,7 @@ const off = het3dEventBus.on("input-editor", (msg) => {
 
 ```vue
 <template>
-  <Het3d :scene-data="sceneData" mode="view" :event-bus="bus" />
+    <Het3d :scene-data="sceneData" mode="view" :event-bus="bus" />
 </template>
 
 <script setup>
@@ -334,18 +322,18 @@ import { createHet3dEventBus } from "het3d";
 const bus = createHet3dEventBus();
 
 bus.on("input-editor", (msg) => {
-  createTextEditor(msg);
+    createTextEditor(msg);
 });
 </script>
 ```
 
 ### API
 
-| 方法 | 说明 |
-| --- | --- |
-| `on(name, handler)` | 监听事件，返回取消监听函数。 |
-| `off(name, handler)` | 移除监听。 |
-| `once(name, handler)` | 只监听一次。 |
+| 方法                  | 说明                                      |
+| --------------------- | ----------------------------------------- |
+| `on(name, handler)`   | 监听事件，返回取消监听函数。              |
+| `off(name, handler)`  | 移除监听。                                |
+| `once(name, handler)` | 只监听一次。                              |
 | `emit(name, payload)` | 发送事件，返回所有 handler 的返回值数组。 |
 
 这些方法可以从三个地方使用：
@@ -364,41 +352,41 @@ het3dEventBus.on("input-editor", handler);
 
 ```js
 const sceneData = {
-  id: "scene_1",
-  projectId: "project_1",
-  models: [],
-  camera: {
-    position: { x: 5, y: 5, z: 6 },
-    target: { x: 0, y: 0.5, z: 0 },
-    near: 0.1,
-    far: 1000,
-  },
-  canvas: {
-    backgroundColor: "#f5f7fb",
-    showGrid: true,
-    showAxes: true,
-  },
-  lights: {
-    ambient: { color: "#ffffff", intensity: 1.6 },
-    directional: {
-      color: "#ffffff",
-      intensity: 1.25,
-      position: { x: 4, y: 8, z: 5 },
+    id: "scene_1",
+    projectId: "project_1",
+    models: [],
+    camera: {
+        position: { x: 5, y: 5, z: 6 },
+        target: { x: 0, y: 0.5, z: 0 },
+        near: 0.1,
+        far: 1000,
     },
-  },
-  httpsConfig: {
-    enabled: false,
-    method: "GET",
-    url: "",
-    query: "{}",
-    body: "{}",
-    processor: "",
-    intervalSeconds: 10,
-  },
-  editorState: {
-    selectedIds: [],
-    transformMode: "translate",
-  },
+    canvas: {
+        backgroundColor: "#f5f7fb",
+        showGrid: true,
+        showAxes: true,
+    },
+    lights: {
+        ambient: { color: "#ffffff", intensity: 1.6 },
+        directional: {
+            color: "#ffffff",
+            intensity: 1.25,
+            position: { x: 4, y: 8, z: 5 },
+        },
+    },
+    httpsConfig: {
+        enabled: false,
+        method: "GET",
+        url: "",
+        query: "{}",
+        body: "{}",
+        processor: "",
+        intervalSeconds: 10,
+    },
+    editorState: {
+        selectedIds: [],
+        transformMode: "translate",
+    },
 };
 ```
 
@@ -435,17 +423,17 @@ const sceneData = {
 
 常用字段说明：
 
-| 字段 | 说明 |
-| --- | --- |
-| `id` | 对象唯一 ID，`setValue`、选中、删除都依赖它。 |
-| `type` | 支持 `box`、`sphere`、`cylinder`、`plane`、`icon`、`image`、`importedModel`、`importedLayer`、`importedMesh`。 |
-| `position` | 位置 `{ x, y, z }`。 |
-| `rotation` | 欧拉角 `{ x, y, z }`，单位为弧度。 |
-| `scale` | 缩放 `{ x, y, z }`。 |
-| `modelPath` | `importedModel` 可直接使用的模型 URL 或 data URL。 |
-| `assetId` | 配合 `assetLoader` 获取模型资源。 |
-| `dataBindings` | 设备或接口数据绑定配置。 |
-| `events` | 对象交互事件配置。 |
+| 字段           | 说明                                                                                                           |
+| -------------- | -------------------------------------------------------------------------------------------------------------- |
+| `id`           | 对象唯一 ID，`setValue`、选中、删除都依赖它。                                                                  |
+| `type`         | 支持 `box`、`sphere`、`cylinder`、`plane`、`icon`、`image`、`importedModel`、`importedLayer`、`importedMesh`。 |
+| `position`     | 位置 `{ x, y, z }`。                                                                                           |
+| `rotation`     | 欧拉角 `{ x, y, z }`，单位为弧度。                                                                             |
+| `scale`        | 缩放 `{ x, y, z }`。                                                                                           |
+| `modelPath`    | `importedModel` 可直接使用的模型 URL 或 data URL。                                                             |
+| `assetId`      | 配合 `assetLoader` 获取模型资源。                                                                              |
+| `dataBindings` | 设备或接口数据绑定配置。                                                                                       |
+| `events`       | 对象交互事件配置。                                                                                             |
 
 ## 数据绑定
 
@@ -500,17 +488,17 @@ const sceneData = {
 
 支持的 `triggerType`：
 
-| 值 | 说明 |
-| --- | --- |
-| `leftClick` | 预览态鼠标左键点击对象时触发。 |
-| `valueChange` | 数据绑定值变化时触发。 |
+| 值            | 说明                           |
+| ------------- | ------------------------------ |
+| `leftClick`   | 预览态鼠标左键点击对象时触发。 |
+| `valueChange` | 数据绑定值变化时触发。         |
 
 支持的 `actionType`：
 
-| 值 | 说明 |
-| --- | --- |
+| 值               | 说明                                 |
+| ---------------- | ------------------------------------ |
 | `customFunction` | 执行 `code` 中的 JavaScript 函数体。 |
-| `devicePopover` | 触发设备弹窗。 |
+| `devicePopover`  | 触发设备弹窗。                       |
 
 ## 模型资源适配器
 
@@ -518,21 +506,21 @@ const sceneData = {
 
 ```js
 async function assetLoader(assetId) {
-  return {
-    id: assetId,
-    modelPath: "/models/building.glb",
-  };
+    return {
+        id: assetId,
+        modelPath: "/models/building.glb",
+    };
 }
 ```
 
 可返回字段：
 
-| 字段 | 说明 |
-| --- | --- |
-| `modelPath` | 模型 URL 或 data URL。 |
-| `sourceUrl` | 模型 URL，`modelPath` 不存在时使用。 |
-| `metadata.sourceUrl` | 备用模型 URL。 |
-| `blob` | `File` 或 `Blob`，组件会转为 data URL。 |
+| 字段                 | 说明                                    |
+| -------------------- | --------------------------------------- |
+| `modelPath`          | 模型 URL 或 data URL。                  |
+| `sourceUrl`          | 模型 URL，`modelPath` 不存在时使用。    |
+| `metadata.sourceUrl` | 备用模型 URL。                          |
+| `blob`               | `File` 或 `Blob`，组件会转为 data URL。 |
 
 ## HTTP/HTTPS 轮询配置
 
@@ -540,75 +528,75 @@ async function assetLoader(assetId) {
 
 运行条件：
 
-| 条件 | 说明 |
-| --- | --- |
-| `mode="view"` | 只有预览态会执行轮询。 |
-| `sceneData.httpsConfig.enabled=true` | 未启用时不请求。 |
-| `sceneData.httpsConfig.url` 非空 | 请求地址为空时不请求。 |
-| `intervalSeconds >= 1` | 最小轮询间隔为 1 秒。 |
+| 条件                                 | 说明                   |
+| ------------------------------------ | ---------------------- |
+| `mode="view"`                        | 只有预览态会执行轮询。 |
+| `sceneData.httpsConfig.enabled=true` | 未启用时不请求。       |
+| `sceneData.httpsConfig.url` 非空     | 请求地址为空时不请求。 |
+| `intervalSeconds >= 1`               | 最小轮询间隔为 1 秒。  |
 
 完整配置：
 
 ```js
 const sceneData = {
-  id: "scene_1",
-  models: [
-    {
-      id: "obj_ac_1",
-      name: "空调 1",
-      type: "box",
-      dataBindings: [
+    id: "scene_1",
+    models: [
         {
-          id: "device_001-temperature-value",
-          displayName: "温度",
-          propName: "temperature",
-          value: null,
-          binding: {
-            deviceId: "device_001",
-            deviceNo: "AC001",
-            identifier: "temperature",
-            valueMode: "value",
-          },
+            id: "obj_ac_1",
+            name: "空调 1",
+            type: "box",
+            dataBindings: [
+                {
+                    id: "device_001-temperature-value",
+                    displayName: "温度",
+                    propName: "temperature",
+                    value: null,
+                    binding: {
+                        deviceId: "device_001",
+                        deviceNo: "AC001",
+                        identifier: "temperature",
+                        valueMode: "value",
+                    },
+                },
+            ],
         },
-      ],
-    },
-  ],
-  httpsConfig: {
-    enabled: true,
-    method: "GET",
-    url: "/api/device/realtime",
-    query: JSON.stringify(
-      {
-        projectId: "project_1",
-        deviceNos: ["AC001"],
-      },
-      null,
-      2,
-    ),
-    body: "{}",
-    intervalSeconds: 5,
-    processor: `function handleMessage(e) {
+    ],
+    httpsConfig: {
+        enabled: true,
+        method: "GET",
+        url: "/api/device/realtime",
+        query: JSON.stringify(
+            {
+                projectId: "project_1",
+                deviceNos: ["AC001"],
+            },
+            null,
+            2,
+        ),
+        body: "{}",
+        intervalSeconds: 5,
+        processor: `function handleMessage(e) {
   const list = Array.isArray(e?.data) ? e.data : [];
   return list.map((item) => ({
     dataId: item.dataId,
     value: item.value,
   }));
 }`,
-  },
+    },
 };
 ```
 
 `httpsConfig` 字段：
 
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `enabled` | `boolean` | 是否启用轮询。 |
-| `method` | `"GET" \| "POST"` | 只支持 `GET` 和 `POST`，其他值会按 `GET` 处理。 |
-| `url` | `string` | 请求地址，可以是相对地址或完整 URL。 |
-| `query` | `string \| object` | JSON 对象。`GET` 时会拼到 URL 查询参数中；`POST` 时也会传给 `requestHandler`。 |
-| `body` | `string \| object` | JSON 值。默认 `fetch` 只会在 `POST` 时作为 JSON body 发送。 |
-| `processor` | `string` | 响应处理函数源码，必须返回 `{ dataId, value }[]`。 |
-| `intervalSeconds` | `number` | 轮询间隔秒数，最小为 1。 |
+| 字段              | 类型               | 说明                                                                           |
+| ----------------- | ------------------ | ------------------------------------------------------------------------------ |
+| `enabled`         | `boolean`          | 是否启用轮询。                                                                 |
+| `method`          | `"GET" \| "POST"`  | 只支持 `GET` 和 `POST`，其他值会按 `GET` 处理。                                |
+| `url`             | `string`           | 请求地址，可以是相对地址或完整 URL。                                           |
+| `query`           | `string \| object` | JSON 对象。`GET` 时会拼到 URL 查询参数中；`POST` 时也会传给 `requestHandler`。 |
+| `body`            | `string \| object` | JSON 值。默认 `fetch` 只会在 `POST` 时作为 JSON body 发送。                    |
+| `processor`       | `string`           | 响应处理函数源码，必须返回 `{ dataId, value }[]`。                             |
+| `intervalSeconds` | `number`           | 轮询间隔秒数，最小为 1。                                                       |
 
 `GET` 请求示例：
 
@@ -676,40 +664,40 @@ Content-Type: application/json
 
 ```js
 async function requestHandler(options) {
-  const { method, url, query, body, timeout } = options;
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeout || 10000);
+    const { method, url, query, body, timeout } = options;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeout || 10000);
 
-  try {
-    const requestUrl = new URL(url, window.location.origin);
-    if (method !== "POST") {
-      Object.entries(query || {}).forEach(([key, value]) => {
-        if (Array.isArray(value)) {
-          value.forEach((item) => requestUrl.searchParams.append(key, String(item)));
-        } else if (value !== undefined) {
-          requestUrl.searchParams.set(key, value == null ? "" : String(value));
+    try {
+        const requestUrl = new URL(url, window.location.origin);
+        if (method !== "POST") {
+            Object.entries(query || {}).forEach(([key, value]) => {
+                if (Array.isArray(value)) {
+                    value.forEach((item) => requestUrl.searchParams.append(key, String(item)));
+                } else if (value !== undefined) {
+                    requestUrl.searchParams.set(key, value == null ? "" : String(value));
+                }
+            });
         }
-      });
+
+        const response = await fetch(requestUrl.toString(), {
+            method: method === "POST" ? "POST" : "GET",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${localStorage.getItem("token") || ""}`,
+            },
+            body: method === "POST" ? JSON.stringify(body || {}) : undefined,
+            signal: controller.signal,
+        });
+
+        return {
+            data: await response.json(),
+            status: response.status,
+            response,
+        };
+    } finally {
+        window.clearTimeout(timer);
     }
-
-    const response = await fetch(requestUrl.toString(), {
-      method: method === "POST" ? "POST" : "GET",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${localStorage.getItem("token") || ""}`,
-      },
-      body: method === "POST" ? JSON.stringify(body || {}) : undefined,
-      signal: controller.signal,
-    });
-
-    return {
-      data: await response.json(),
-      status: response.status,
-      response,
-    };
-  } finally {
-    window.clearTimeout(timer);
-  }
 }
 ```
 
@@ -733,18 +721,18 @@ async function requestHandler(options) {
 
 ```js
 [
-  { dataId: "device_001-temperature-value", value: 26.5 },
-  { dataId: "device_001-running-value", value: true }
-]
+    { dataId: "device_001-temperature-value", value: 26.5 },
+    { dataId: "device_001-running-value", value: true },
+];
 ```
 
 `dataId` 必须匹配模型对象的 `dataBindings[].id`。匹配后组件会更新：
 
-| 更新位置 | 说明 |
-| --- | --- |
-| `dataBindings[].value` | 绑定项当前值。 |
-| `object[propName]` | 如果绑定项配置了 `propName`，同步写入对象字段。 |
-| `valueChange` 事件 | 值变化后触发对象上配置的 `valueChange` 事件。 |
+| 更新位置               | 说明                                            |
+| ---------------------- | ----------------------------------------------- |
+| `dataBindings[].value` | 绑定项当前值。                                  |
+| `object[propName]`     | 如果绑定项配置了 `propName`，同步写入对象字段。 |
+| `valueChange` 事件     | 值变化后触发对象上配置的 `valueChange` 事件。   |
 
 推荐写法：
 
@@ -757,7 +745,7 @@ processor: `function handleMessage(e) {
       dataId: String(item.dataId),
       value: item.value,
     }));
-}`
+}`;
 ```
 
 也可以直接写成函数表达式：
@@ -769,42 +757,37 @@ processor: `(response) => {
     dataId: item.dataId,
     value: item.value,
   }));
-}`
+}`;
 ```
 
 常见问题：
 
-| 问题 | 处理方式 |
-| --- | --- |
-| 需要传 headers | 不要写在 `httpsConfig`，通过 `requestHandler` 统一处理。 |
-| `query` 解析失败 | `query` 必须是 JSON 对象，不支持数组作为根值。 |
-| 轮询没有执行 | 确认 `mode="view"`、`enabled=true`、`url` 非空。 |
-| 场景值没更新 | 确认 `processor` 返回数组，且 `dataId` 等于 `dataBindings[].id`。 |
+| 问题             | 处理方式                                                          |
+| ---------------- | ----------------------------------------------------------------- |
+| 需要传 headers   | 不要写在 `httpsConfig`，通过 `requestHandler` 统一处理。          |
+| `query` 解析失败 | `query` 必须是 JSON 对象，不支持数组作为根值。                    |
+| 轮询没有执行     | 确认 `mode="view"`、`enabled=true`、`url` 非空。                  |
+| 场景值没更新     | 确认 `processor` 返回数组，且 `dataId` 等于 `dataBindings[].id`。 |
 
 ## 设备弹窗配置
 
 设备弹窗有两种接入方式：
 
-| 方式 | 适用场景 |
-| --- | --- |
-| 监听 `device-popover` 事件 | 宿主项目已有弹窗系统，想完全自己控制展示。 |
+| 方式                          | 适用场景                                              |
+| ----------------------------- | ----------------------------------------------------- |
+| 监听 `device-popover` 事件    | 宿主项目已有弹窗系统，想完全自己控制展示。            |
 | 传入 `devicePopoverComponent` | 希望 het3d 自动调用弹窗组件的 `show/hide/setAnchor`。 |
 
 ### 方式一：监听事件自行展示
 
 ```vue
 <template>
-  <Het3d
-    :scene-data="sceneData"
-    mode="view"
-    @device-popover="openDeviceDialog"
-  />
+    <Het3d :scene-data="sceneData" mode="view" @device-popover="openDeviceDialog" />
 
-  <YourDeviceDialog
-    v-model="dialogVisible"
-    :device-no="activeDeviceNo"
-    :object-data="activeObject"
-  />
+    <YourDeviceDialog
+        v-model="dialogVisible"
+        :device-no="activeDeviceNo"
+        :object-data="activeObject" />
 </template>
 
 <script setup>
@@ -817,24 +800,21 @@ const activeDeviceNo = ref("");
 const activeObject = ref(null);
 
 function openDeviceDialog(payload) {
-  activeObject.value = payload.object;
-  activeDeviceNo.value =
-    payload.event?.deviceNo ||
-    payload.event?.params?.deviceNo ||
-    "";
-  dialogVisible.value = true;
+    activeObject.value = payload.object;
+    activeDeviceNo.value = payload.event?.deviceNo || payload.event?.params?.deviceNo || "";
+    dialogVisible.value = true;
 }
 </script>
 ```
 
 `device-popover` 事件 payload：
 
-| 字段 | 说明 |
-| --- | --- |
-| `object` | 触发弹窗的场景对象快照。 |
-| `event` | 触发弹窗的事件配置。 |
-| `payload` | 鼠标事件、锚点等运行时信息。 |
-| `mode` | `"floating"` 或 `"builtIn"`。 |
+| 字段      | 说明                          |
+| --------- | ----------------------------- |
+| `object`  | 触发弹窗的场景对象快照。      |
+| `event`   | 触发弹窗的事件配置。          |
+| `payload` | 鼠标事件、锚点等运行时信息。  |
+| `mode`    | `"floating"` 或 `"builtIn"`。 |
 
 ### 方式二：传入弹窗组件
 
@@ -842,11 +822,7 @@ function openDeviceDialog(payload) {
 
 ```vue
 <template>
-  <Het3d
-    :scene-data="sceneData"
-    mode="view"
-    :device-popover-component="DevicePopover"
-  />
+    <Het3d :scene-data="sceneData" mode="view" :device-popover-component="DevicePopover" />
 </template>
 
 <script setup>
@@ -860,22 +836,22 @@ import DevicePopover from "./DevicePopover.vue";
 
 ```vue
 <template>
-  <div v-if="visible" class="device-popover" :style="popoverStyle">
-    <button class="device-popover__close" type="button" @click="hide">x</button>
-    <div class="device-popover__title">{{ title }}</div>
-    <div class="device-popover__row">设备编号：{{ deviceNo || "-" }}</div>
-    <div class="device-popover__row">对象名称：{{ objectData?.name || "-" }}</div>
-  </div>
+    <div v-if="visible" class="device-popover" :style="popoverStyle">
+        <button class="device-popover__close" type="button" @click="hide">x</button>
+        <div class="device-popover__title">{{ title }}</div>
+        <div class="device-popover__row">设备编号：{{ deviceNo || "-" }}</div>
+        <div class="device-popover__row">对象名称：{{ objectData?.name || "-" }}</div>
+    </div>
 </template>
 
 <script setup>
 import { computed, ref } from "vue";
 
 const props = defineProps({
-  variant: {
-    type: String,
-    default: "floating",
-  },
+    variant: {
+        type: String,
+        default: "floating",
+    },
 });
 
 const visible = ref(false);
@@ -885,82 +861,82 @@ const runtimePayload = ref({});
 const anchor = ref(null);
 
 const deviceNo = computed(() => {
-  const params = eventItem.value?.params;
-  return eventItem.value?.deviceNo || params?.deviceNo || "";
+    const params = eventItem.value?.params;
+    return eventItem.value?.deviceNo || params?.deviceNo || "";
 });
 
 const title = computed(() => {
-  return eventItem.value?.name || objectData.value?.name || "设备详情";
+    return eventItem.value?.name || objectData.value?.name || "设备详情";
 });
 
 const popoverStyle = computed(() => {
-  if (props.variant === "builtIn") {
-    const point = anchor.value || runtimePayload.value?.anchor || { x: 24, y: 24 };
-    return {
-      position: "absolute",
-      left: `${Math.max((point.x || 0) + 12, 12)}px`,
-      top: `${Math.max((point.y || 0) + 12, 12)}px`,
-      zIndex: 20,
-    };
-  }
+    if (props.variant === "builtIn") {
+        const point = anchor.value || runtimePayload.value?.anchor || { x: 24, y: 24 };
+        return {
+            position: "absolute",
+            left: `${Math.max((point.x || 0) + 12, 12)}px`,
+            top: `${Math.max((point.y || 0) + 12, 12)}px`,
+            zIndex: 20,
+        };
+    }
 
-  const point = runtimePayload.value?.pointerEvent || { clientX: 24, clientY: 24 };
-  return {
-    position: "fixed",
-    left: `${Math.max((point.clientX || 0) + 12, 12)}px`,
-    top: `${Math.max((point.clientY || 0) + 12, 12)}px`,
-    zIndex: 9999,
-  };
+    const point = runtimePayload.value?.pointerEvent || { clientX: 24, clientY: 24 };
+    return {
+        position: "fixed",
+        left: `${Math.max((point.clientX || 0) + 12, 12)}px`,
+        top: `${Math.max((point.clientY || 0) + 12, 12)}px`,
+        zIndex: 9999,
+    };
 });
 
 function show(nextObjectData, nextEventItem, nextPayload = {}) {
-  objectData.value = nextObjectData;
-  eventItem.value = nextEventItem;
-  runtimePayload.value = nextPayload;
-  anchor.value = nextPayload.anchor || null;
-  visible.value = true;
+    objectData.value = nextObjectData;
+    eventItem.value = nextEventItem;
+    runtimePayload.value = nextPayload;
+    anchor.value = nextPayload.anchor || null;
+    visible.value = true;
 
-  // 可以在这里根据 deviceNo 请求设备详情。
+    // 可以在这里根据 deviceNo 请求设备详情。
 }
 
 function hide() {
-  visible.value = false;
+    visible.value = false;
 }
 
 function setAnchor(nextAnchor) {
-  anchor.value = nextAnchor;
+    anchor.value = nextAnchor;
 }
 
 defineExpose({
-  show,
-  hide,
-  setAnchor,
+    show,
+    hide,
+    setAnchor,
 });
 </script>
 
 <style scoped>
 .device-popover {
-  width: 280px;
-  padding: 12px;
-  border: 1px solid #d7dde8;
-  border-radius: 6px;
-  background: #ffffff;
-  box-shadow: 0 10px 30px rgb(15 23 42 / 18%);
-  color: #1f2937;
+    width: 280px;
+    padding: 12px;
+    border: 1px solid #d7dde8;
+    border-radius: 6px;
+    background: #ffffff;
+    box-shadow: 0 10px 30px rgb(15 23 42 / 18%);
+    color: #1f2937;
 }
 
 .device-popover__close {
-  float: right;
+    float: right;
 }
 
 .device-popover__title {
-  margin-bottom: 8px;
-  font-weight: 600;
+    margin-bottom: 8px;
+    font-weight: 600;
 }
 
 .device-popover__row {
-  line-height: 24px;
-  font-size: 13px;
+    line-height: 24px;
+    font-size: 13px;
 }
 </style>
 ```
@@ -969,24 +945,24 @@ defineExpose({
 
 ```js
 defineExpose({
-  show(objectData, eventItem, payload) {},
-  hide() {},
-  setAnchor(anchor) {},
+    show(objectData, eventItem, payload) {},
+    hide() {},
+    setAnchor(anchor) {},
 });
 ```
 
-| 方法 | 调用时机 |
-| --- | --- |
-| `show(objectData, eventItem, payload)` | 设备弹窗被触发时调用。 |
-| `hide()` | 组件内部需要关闭弹窗，或 het3d 切换弹窗状态时调用。 |
-| `setAnchor(anchor)` | `builtIn` 弹窗随相机或画布变化更新锚点时调用。 |
+| 方法                                   | 调用时机                                            |
+| -------------------------------------- | --------------------------------------------------- |
+| `show(objectData, eventItem, payload)` | 设备弹窗被触发时调用。                              |
+| `hide()`                               | 组件内部需要关闭弹窗，或 het3d 切换弹窗状态时调用。 |
+| `setAnchor(anchor)`                    | `builtIn` 弹窗随相机或画布变化更新锚点时调用。      |
 
 `payload` 常用字段：
 
-| 字段 | 说明 |
-| --- | --- |
-| `pointerEvent` | `floating` 模式下的鼠标位置，包含 `clientX/clientY`。 |
-| `anchor` | `builtIn` 模式下的画布内锚点，包含 `x/y/width/height`。 |
+| 字段           | 说明                                                    |
+| -------------- | ------------------------------------------------------- |
+| `pointerEvent` | `floating` 模式下的鼠标位置，包含 `clientX/clientY`。   |
+| `anchor`       | `builtIn` 模式下的画布内锚点，包含 `x/y/width/height`。 |
 
 ### 如何触发设备弹窗
 
@@ -1011,13 +987,13 @@ defineExpose({
 
 ```js
 het3d.showDevicePopover({
-  objectId: object.id,
-  deviceNo: "AC001",
-  params: {
+    objectId: object.id,
     deviceNo: "AC001",
-    title: "空调 1",
-  },
-  popoverMode: "builtIn",
+    params: {
+        deviceNo: "AC001",
+        title: "空调 1",
+    },
+    popoverMode: "builtIn",
 });
 ```
 
@@ -1025,31 +1001,31 @@ het3d.showDevicePopover({
 
 ```js
 window.het3d.showDevicePopover({
-  objectId: "obj_ac_1",
-  deviceNo: "AC001",
-  popoverMode: "floating",
+    objectId: "obj_ac_1",
+    deviceNo: "AC001",
+    popoverMode: "floating",
 });
 ```
 
 `showDevicePopover(options)` 参数：
 
-| 参数 | 说明 |
-| --- | --- |
-| `objectId` / `targetId` / `id` | 目标对象 ID。 |
-| `objectData` / `object` | 直接传入对象数据；优先级高于对象 ID 查询。 |
-| `objectName` / `name` | 找不到对象数据时用于弹窗显示的名称。 |
-| `deviceNo` | 设备编号。 |
-| `params` | 业务参数，会原样进入 `eventItem.params`。如果是字符串，会作为 `deviceNo` 兜底。 |
-| `popoverMode` | `"floating"` 或 `"builtIn"`，默认 `"floating"`。 |
-| `pointerEvent` / `event` | 手动指定鼠标位置。 |
-| `anchor` | 手动指定锚点，支持 `{ x, y }` 或 `{ clientX, clientY }`。 |
+| 参数                           | 说明                                                                            |
+| ------------------------------ | ------------------------------------------------------------------------------- |
+| `objectId` / `targetId` / `id` | 目标对象 ID。                                                                   |
+| `objectData` / `object`        | 直接传入对象数据；优先级高于对象 ID 查询。                                      |
+| `objectName` / `name`          | 找不到对象数据时用于弹窗显示的名称。                                            |
+| `deviceNo`                     | 设备编号。                                                                      |
+| `params`                       | 业务参数，会原样进入 `eventItem.params`。如果是字符串，会作为 `deviceNo` 兜底。 |
+| `popoverMode`                  | `"floating"` 或 `"builtIn"`，默认 `"floating"`。                                |
+| `pointerEvent` / `event`       | 手动指定鼠标位置。                                                              |
+| `anchor`                       | 手动指定锚点，支持 `{ x, y }` 或 `{ clientX, clientY }`。                       |
 
 `floating` 和 `builtIn` 的区别：
 
-| 模式 | 说明 |
-| --- | --- |
-| `floating` | 弹窗按鼠标位置或对象投影位置展示，适合全局浮层。 |
-| `builtIn` | 弹窗挂在 het3d 画布内部，锚点会随相机和对象位置更新。 |
+| 模式       | 说明                                                  |
+| ---------- | ----------------------------------------------------- |
+| `floating` | 弹窗按鼠标位置或对象投影位置展示，适合全局浮层。      |
+| `builtIn`  | 弹窗挂在 het3d 画布内部，锚点会随相机和对象位置更新。 |
 
 ## 构建和发包
 
