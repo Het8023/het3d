@@ -161,7 +161,7 @@ const snapshot = api.getSceneSnapshot();
 
 ## 运行时 API
 
-预览态 `mode="view"` 且 `installGlobal=true` 时，组件会临时挂载：
+`installGlobal=true` 时，组件会临时挂载：
 
 ```js
 window.het3d;
@@ -175,6 +175,7 @@ window.het3d;
 | `het3d.active`                     | 当前选中对象数组。                    |
 | `het3d.setValue(payload)`          | 按对象 ID 修改对象字段。              |
 | `het3d.showDevicePopover(options)` | 触发设备弹窗动作，返回 `true/false`。 |
+| `het3d.explodeModel(options)`      | 触发模型展开动作，返回 `true/false`。 |
 | `het3d.on(name, handler)`          | 监听自定义事件，返回取消监听函数。    |
 | `het3d.off(name, handler)`         | 移除自定义事件监听。                  |
 | `het3d.once(name, handler)`        | 只监听一次自定义事件。                |
@@ -224,6 +225,14 @@ context.het3d.showDevicePopover({
 });
 ```
 
+模型展开也可以通过自定义事件代码触发：
+
+```js
+context.het3d.explodeModel({
+    objectId: object.id,
+});
+```
+
 事件上下文包含：
 
 ```js
@@ -246,7 +255,7 @@ het3d.on("input-editor", (msg) => {
 
 ### 在对象事件中发送消息
 
-场景对象事件仍然由 `leftClick` 或 `valueChange` 等内置触发时机执行。事件代码里调用 `het3d.emit(name, payload)`，把业务参数交给外部：
+场景对象事件仍然由 `leftClick`、`leftDoubleClick` 或 `valueChange` 等内置触发时机执行。事件代码里调用 `het3d.emit(name, payload)`，把业务参数交给外部：
 
 ```js
 {
@@ -487,12 +496,33 @@ const sceneData = {
 }
 ```
 
+模型展开事件：
+
+```js
+{
+  id: "event_explode",
+  name: "楼栋分层展开",
+  triggerType: "leftDoubleClick",
+  actionType: "modelExplode",
+  explodeConfig: {
+    targetIds: "",
+    direction: "up",
+    spacing: 2,
+    duration: 800,
+    easing: "linear",
+    toggle: true,
+    offset: { x: 0, y: 2, z: 0 },
+  },
+}
+```
+
 支持的 `triggerType`：
 
-| 值            | 说明                           |
-| ------------- | ------------------------------ |
-| `leftClick`   | 预览态鼠标左键点击对象时触发。 |
-| `valueChange` | 数据绑定值变化时触发。         |
+| 值                | 说明                           |
+| ----------------- | ------------------------------ |
+| `leftClick`       | 预览态鼠标左键点击对象时触发。 |
+| `leftDoubleClick` | 预览态鼠标左键双击对象时触发。 |
+| `valueChange`     | 数据绑定值变化时触发。         |
 
 支持的 `actionType`：
 
@@ -500,6 +530,7 @@ const sceneData = {
 | ---------------- | ------------------------------------ |
 | `customFunction` | 执行 `code` 中的 JavaScript 函数体。 |
 | `devicePopover`  | 触发设备弹窗。                       |
+| `modelExplode`   | 触发模型展开或收起。                 |
 
 ## 模型资源适配器
 
@@ -1038,6 +1069,98 @@ window.het3d.showDevicePopover({
 | ---------- | ----------------------------------------------------- |
 | `floating` | 弹窗按鼠标位置或对象投影位置展示，适合全局浮层。      |
 | `builtIn`  | 弹窗挂在 het3d 画布内部，锚点会随相机和对象位置更新。 |
+
+## 如何触发模型展开
+
+模型展开用于把一个模型或多个图层按预设方向和间距匀速移动到展开位置。典型场景是楼栋模型按楼层上下展开。
+
+### 通过对象事件触发
+
+在对象 `events` 数组中配置 `actionType: "modelExplode"`：
+
+```js
+{
+  id: "event_explode",
+  name: "楼栋分层展开",
+  triggerType: "leftDoubleClick",
+  actionType: "modelExplode",
+  explodeConfig: {
+    targetIds: "",
+    direction: "up",
+    spacing: 2,
+    duration: 800,
+    easing: "linear",
+    toggle: true,
+    offset: { x: 0, y: 2, z: 0 },
+  },
+}
+```
+
+当 `targetIds` 为空时，默认使用当前触发对象。当前触发对象如果是导入父模型，het3d 会自动解析其 `importedLayer` 子图层，并按 `source.layerIndex` 顺序把每个图层作为独立动画目标。也就是说，4 层楼栋双击后会是 4 个图层同时开始分层运动，而不是父模型整体移动。
+
+### 通过公共 API 触发
+
+可以在浏览器控制台、宿主代码或对象事件自定义函数中调用：
+
+```js
+window.het3d.explodeModel({
+    objectId: "obj_building_1",
+});
+```
+
+也可以直接通过事件总线兼容入口触发：
+
+```js
+window.het3d.on("modelExplode", {
+    objectId: "obj_building_1",
+    explodeConfig: {
+        direction: "custom",
+        offset: { x: 0, y: 3, z: 0 },
+        duration: 800,
+        toggle: true,
+    },
+});
+```
+
+`explodeModel(options)` 参数：
+
+| 参数                           | 说明                                                                 |
+| ------------------------------ | -------------------------------------------------------------------- |
+| `objectId` / `targetId` / `id` | 触发展开的对象 ID；未传 `explodeConfig` 时会从该对象事件中查找配置。 |
+| `objectData` / `object`        | 直接传入对象数据，用于辅助解析当前事件和目标。                       |
+| `eventId`                      | 指定要使用的模型展开事件 ID。                                        |
+| `triggerType`                  | 触发方式，例如 `manual`、`leftClick`、`leftDoubleClick`。             |
+| `explodeConfig`                | 展开配置；未传时使用目标对象上第一个 `modelExplode` 事件配置。        |
+| `event`                        | 直接传入事件对象，优先用于读取 `explodeConfig`。                      |
+
+`explodeConfig` 字段：
+
+| 字段        | 说明                                                                 |
+| ----------- | -------------------------------------------------------------------- |
+| `targetIds` | 逗号分隔的目标对象 ID；为空时默认当前触发对象。                      |
+| `targets`   | 高级目标列表，每项可包含 `objectId` / `id`、`fromPosition`、`toPosition`。 |
+| `direction` | 展开方向：`up`、`down`、`both`、`custom`。                            |
+| `spacing`   | 自动展开间距。                                                       |
+| `offset`    | `custom` 方向下的 XYZ 偏移，多个图层会按顺序逐层叠加。                |
+| `duration`  | 动画时长，单位毫秒；默认 `800`。                                      |
+| `easing`    | 当前使用匀速移动，值为 `linear`。                                     |
+| `toggle`    | `true` 时再次触发会按原动画收起；`false` 时只展开。                   |
+
+### 目标解析和动画规则
+
+- `targetIds` 或 `targets` 指向普通对象时，直接移动该对象。
+- `targetIds` 或 `targets` 指向导入父模型时，自动展开为父模型下的 `importedLayer` 子对象。
+- `up` / `down` / `both` 使用 `spacing` 生成目标位置。
+- `custom` 使用 `offset` 生成目标位置；多图层时第 1 个目标使用 0 倍偏移，第 2 个目标使用 1 倍偏移，以此形成层间空隙；单个目标使用 1 倍偏移。
+- 如果显式传入 `targets[].toPosition`，优先使用该目标位置。
+- 展开过程中只改变位置，不改变旋转、缩放、材质、可见性和业务绑定字段。
+- `toggle` 为 `true` 时，已展开状态再次触发会回到原始 `fromPosition`；动画未完成时再次触发，会从当前实际位置平滑切换。
+
+### 大模型性能说明
+
+模型展开动画运行期间，het3d 每帧只更新参与对象的 Three.js `Object3D.position` 和必要矩阵状态，不会每帧写回完整场景数据、重算父模型包围盒或重复触发 `scene-change`。动画完成后才同步最终位置到场景数据。
+
+导入图层作为展开目标时，图层根节点保持可更新矩阵；内部静态网格仍可保留运行时优化。父导入模型的透明点击代理会在展开或收起完成后根据子图层最新包围盒刷新，保证展开后点击任意可见子图层区域仍能命中父模型事件并再次触发收起。
 
 ## 构建和发包
 

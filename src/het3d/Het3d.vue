@@ -175,6 +175,8 @@ let previewAnimationStartedAt = 0;
 let sceneBuiltInDevicePopoverAnchorId = "";
 let copiedSceneObjects = [];
 let pasteSerial = 0;
+const activeModelExplodeAnimations = new Map();
+const modelExplodeStates = new Map();
 
 const objectMap = new Map();
 const selectionRaycastMap = new Map();
@@ -209,6 +211,7 @@ const canvasHet3dApi = createHet3dApi({
     getSetValueOptions: getCanvasHet3dSetValueOptions,
     extra: {
         showDevicePopover: showPublicDevicePopover,
+        explodeModel,
         on: onCanvasEvent,
         off: offCanvasEvent,
         once: onceCanvasEvent,
@@ -230,6 +233,7 @@ onBeforeUnmount(() => {
     cancelAnimationFrame(rangeUpdateFrameId);
     resizeObserver?.disconnect();
     renderer?.domElement?.removeEventListener("pointerdown", handlePointerDown);
+    renderer?.domElement?.removeEventListener("dblclick", handleDoubleClick);
     window.removeEventListener("pointermove", handlePointerMove);
     window.removeEventListener("pointerup", handlePointerUp);
     if (transformHelper) {
@@ -311,6 +315,7 @@ function initThree() {
     applyLightSettings(defaultLights());
 
     renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+    renderer.domElement.addEventListener("dblclick", handleDoubleClick);
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
 
@@ -354,6 +359,8 @@ async function loadSceneData(data) {
     loading.value = true;
     sceneState = normalizeScene(data);
     initialValueChangeEventsExecuted = false;
+    activeModelExplodeAnimations.clear();
+    modelExplodeStates.clear();
     resetPreviewAnimationRuntime();
     hideAllDevicePopovers();
     const migratedToLayers = await migrateImportedMeshesToLayers(sceneState);
@@ -688,6 +695,8 @@ function mapImportedLayersToModel(modelRoot, clonedMeshes, layerObjects) {
 
         entry.node.name = layerData.name;
         entry.node.userData.sceneObjectId = layerData.id;
+        entry.node.userData.het3dLayerRoot = true;
+        entry.node.matrixAutoUpdate = true;
         entry.node.position.set(layerData.position.x, layerData.position.y, layerData.position.z);
         entry.node.rotation.set(layerData.rotation.x, layerData.rotation.y, layerData.rotation.z);
         entry.node.scale.set(layerData.scale.x, layerData.scale.y, layerData.scale.z);
@@ -731,7 +740,7 @@ function createMeshBySourceIndex(meshes) {
 
 function optimizeImportedModelRuntime(modelRoot) {
     modelRoot.traverse((node) => {
-        if (!node.isMesh || node.userData?.selectionProxy) return;
+        if (!node.isMesh || node.userData?.selectionProxy || node.userData?.het3dLayerRoot) return;
         node.updateMatrix();
         node.matrixAutoUpdate = false;
         node.raycast = noopRaycast;
@@ -1340,6 +1349,7 @@ function updateSceneBuiltInDevicePopoverAnchor() {
 
 function animate() {
     updatePreviewAnimations();
+    updateModelExplodeAnimations();
     controls?.update();
     updateSceneBuiltInDevicePopoverAnchor();
     renderer?.render(scene, camera);
@@ -1568,6 +1578,14 @@ function handlePointerDown(event) {
     beginDirectDrag(event, nextIds);
 }
 
+function handleDoubleClick(event) {
+    if (event.button !== 0 || props.mode !== "view" || !sceneState) return;
+    focusCanvasHost();
+    const hit = getHit(event);
+    if (!hit) return;
+    runObjectEvents(hit.id, "leftDoubleClick", { pointerEvent: event, hit });
+}
+
 function focusCanvasHost() {
     hostRef.value?.focus?.({ preventScroll: true });
 }
@@ -1586,12 +1604,28 @@ function isExecutableObjectEvent(eventItem, triggerType, payload = {}) {
     if (eventItem?.triggerType !== triggerType) return false;
     if (eventItem.actionType === "customFunction") return Boolean(String(eventItem.code || "").trim());
     if (eventItem.actionType === "devicePopover") return triggerType === "leftClick";
+    if (eventItem.actionType === "modelExplode") {
+        return ["leftClick", "leftDoubleClick"].includes(triggerType);
+    }
     return false;
 }
 
 function runObjectEventAction(objectData, eventItem, payload = {}) {
     if (eventItem.actionType === "devicePopover") {
         showDevicePopover(objectData, eventItem, payload);
+        return;
+    }
+    if (eventItem.actionType === "modelExplode") {
+        explodeModel({
+            objectId: objectData.id,
+            eventId: eventItem.id,
+            triggerType: eventItem.triggerType,
+            explodeConfig: eventItem.explodeConfig,
+            object: objectData,
+            event: eventItem,
+            pointerEvent: payload.pointerEvent,
+            hit: payload.hit,
+        });
         return;
     }
     runCustomObjectEvent(objectData, eventItem, payload);
@@ -1670,6 +1704,341 @@ function showPublicDevicePopover(options = {}) {
     return true;
 }
 
+function explodeModel(options = {}) {
+    if (!sceneState || props.mode !== "view") return false;
+    const source = isPlainRecord(options) ? options : {};
+    const objectId = String(
+        source.objectId ||
+            source.targetId ||
+            source.id ||
+            source.object?.id ||
+            source.objectData?.id ||
+            "",
+    ).trim();
+    const objectData = objectId ? getObjectData(objectId) : null;
+    const eventItem = resolveModelExplodeEvent(objectData, source);
+    const explodeConfig = normalizeModelExplodeConfig(
+        source.explodeConfig || eventItem?.explodeConfig || {},
+    );
+    const payload = {
+        sceneId: sceneState.id,
+        eventId: String(source.eventId || eventItem?.id || "").trim(),
+        objectId: objectData?.id || objectId,
+        triggerType: source.triggerType || eventItem?.triggerType || "manual",
+        explodeConfig,
+        object: cloneData(objectData || source.objectData || source.object || null),
+        event: cloneData(eventItem || source.event || null),
+        pointerEvent: source.pointerEvent || source.event?.pointerEvent || null,
+        hit: source.hit || null,
+    };
+    return runModelExplode(payload);
+}
+
+function resolveModelExplodeEvent(objectData, source) {
+    if (isPlainRecord(source.event) && source.event.actionType === "modelExplode") {
+        return source.event;
+    }
+    const events = Array.isArray(objectData?.events) ? objectData.events : [];
+    const eventId = String(source.eventId || "").trim();
+    if (eventId) {
+        const matched = events.find((eventItem) => eventItem?.id === eventId);
+        if (matched) return matched;
+    }
+    return events.find((eventItem) => eventItem?.actionType === "modelExplode") || null;
+}
+
+function normalizeModelExplodeConfig(config = {}) {
+    const source = isPlainRecord(config) ? config : {};
+    return {
+        targets: Array.isArray(source.targets) ? source.targets : [],
+        targetIds: source.targetIds || source.objectIds || source.ids || "",
+        direction: ["up", "down", "both", "custom"].includes(source.direction)
+            ? source.direction
+            : "up",
+        spacing: Math.max(Number(source.spacing) || 0, 0),
+        duration: Math.max(Number(source.duration) || 800, 0),
+        easing: source.easing || "linear",
+        toggle: source.toggle !== false,
+        offset: normalizeModelExplodeVector(source.offset, { x: 0, y: 0, z: 0 }),
+    };
+}
+
+function runModelExplode(payload = {}) {
+    const triggerObject = payload.objectId ? getObjectData(payload.objectId) : null;
+    const targets = resolveModelExplodeTargets(payload.explodeConfig, triggerObject);
+    if (!targets.length) return false;
+
+    const now = performance.now();
+    const duration = Math.max(Number(payload.explodeConfig?.duration) || 800, 0);
+    const eventKey = payload.eventId || payload.objectId || "manual";
+    let started = false;
+
+    targets.forEach((target, index) => {
+        const targetId = String(target.objectId || target.id || "").trim();
+        const targetData = targetId ? getObjectData(targetId) : null;
+        const object3d = targetId ? objectMap.get(targetId) : null;
+        if (!targetData || !object3d) return;
+
+        const stateKey = `${eventKey}:${targetId}`;
+        const existingState = modelExplodeStates.get(stateKey);
+        const existingAnimation = activeModelExplodeAnimations.get(stateKey);
+        const fromPosition =
+            existingState?.fromPosition ||
+            normalizeModelExplodeVector(target.fromPosition, targetData.position);
+        const toPosition =
+            existingState?.toPosition ||
+            normalizeModelExplodeVector(
+                target.toPosition,
+                getAutoModelExplodeTargetPosition(
+                    targetData,
+                    payload.explodeConfig,
+                    index,
+                    targets.length,
+                    fromPosition,
+                ),
+            );
+        const targetExpanded = payload.explodeConfig?.toggle
+            ? existingAnimation
+                ? !existingAnimation.targetExpanded
+                : !existingState?.expanded
+            : true;
+        const destination = targetExpanded ? toPosition : fromPosition;
+        const startPosition = vectorFromObject3DPosition(object3d.position);
+
+        modelExplodeStates.set(stateKey, {
+            fromPosition,
+            toPosition,
+            expanded: existingState?.expanded || false,
+        });
+        activeModelExplodeAnimations.set(stateKey, {
+            stateKey,
+            targetId,
+            targetData,
+            object3d,
+            parentImportedModelId: getModelExplodeParentImportedModelId(targetData),
+            startPosition,
+            endPosition: destination,
+            startedAt: now,
+            duration,
+            targetExpanded,
+        });
+        started = true;
+    });
+
+    if (started) {
+        emitCanvasEvent("modelExplode", cloneData(payload));
+    }
+    return started;
+}
+
+function resolveModelExplodeTargets(config = {}, triggerObject) {
+    if (Array.isArray(config.targets) && config.targets.length) {
+        return config.targets
+            .map((target) => (isPlainRecord(target) ? target : null))
+            .filter((target) => target?.objectId || target?.id)
+            .flatMap((target) => expandModelExplodeTarget(target));
+    }
+    const ids = parseModelExplodeTargetIds(config.targetIds);
+    if (!ids.length && triggerObject?.id) ids.push(triggerObject.id);
+    return ids.flatMap((id) => expandModelExplodeTarget({ objectId: id }));
+}
+
+function expandModelExplodeTarget(target) {
+    const targetId = String(target.objectId || target.id || "").trim();
+    const targetData = targetId ? getObjectData(targetId) : null;
+    if (!targetData) return [];
+    const childLayers = getModelExplodeLayerTargets(targetData);
+    if (childLayers.length) {
+        return childLayers.map((layerData) => ({
+            ...target,
+            objectId: layerData.id,
+            id: layerData.id,
+            fromPosition: target.fromPosition ? undefined : layerData.position,
+        }));
+    }
+    return [{ ...target, objectId: targetId, id: targetId }];
+}
+
+function getModelExplodeLayerTargets(objectData) {
+    const children = Array.isArray(objectData?.children) ? objectData.children : [];
+    const layers = children.filter((child) => child?.type === "importedLayer");
+    if (layers.length) {
+        return layers.slice().sort(compareModelExplodeLayers);
+    }
+    return [];
+}
+
+function compareModelExplodeLayers(left, right) {
+    const leftIndex = Number(left?.source?.layerIndex);
+    const rightIndex = Number(right?.source?.layerIndex);
+    if (Number.isFinite(leftIndex) && Number.isFinite(rightIndex)) {
+        return leftIndex - rightIndex;
+    }
+    return String(left?.name || "").localeCompare(String(right?.name || ""), "zh-Hans-CN");
+}
+
+function parseModelExplodeTargetIds(value) {
+    if (Array.isArray(value)) {
+        return value.map((id) => String(id || "").trim()).filter(Boolean);
+    }
+    return String(value || "")
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean);
+}
+
+function getAutoModelExplodeTargetPosition(targetData, config, index, count, fromPosition) {
+    const spacing = Number(config?.spacing) || getModelExplodeDefaultSpacing(targetData);
+    const direction = config?.direction || "up";
+    const offset = normalizeModelExplodeVector(config?.offset, { x: 0, y: 0, z: 0 });
+    const stepIndex = count > 1 ? index : 1;
+    const next = { ...fromPosition };
+    if (direction === "custom") {
+        next.x += offset.x * stepIndex;
+        next.y += offset.y * stepIndex;
+        next.z += offset.z * stepIndex;
+        return next;
+    }
+    if (direction === "down") {
+        next.y -= spacing * stepIndex;
+        return next;
+    }
+    if (direction === "both") {
+        next.y += (index - (count - 1) / 2) * spacing;
+        return next;
+    }
+    next.y += spacing * stepIndex;
+    return next;
+}
+
+function getModelExplodeDefaultSpacing(targetData) {
+    const object3d = targetData?.id ? objectMap.get(targetData.id) : null;
+    if (!object3d) return 2;
+    const box = new THREE.Box3().setFromObject(object3d);
+    if (box.isEmpty()) return 2;
+    const size = box.getSize(new THREE.Vector3());
+    return Math.max(size.y || 0, size.x || 0, size.z || 0, 1);
+}
+
+function normalizeModelExplodeVector(value, fallback = { x: 0, y: 0, z: 0 }) {
+    const source = isPlainRecord(value) ? value : {};
+    return {
+        x: Number.isFinite(Number(source.x)) ? Number(source.x) : Number(fallback?.x) || 0,
+        y: Number.isFinite(Number(source.y)) ? Number(source.y) : Number(fallback?.y) || 0,
+        z: Number.isFinite(Number(source.z)) ? Number(source.z) : Number(fallback?.z) || 0,
+    };
+}
+
+function vectorFromObject3DPosition(position) {
+    return {
+        x: Number(position?.x) || 0,
+        y: Number(position?.y) || 0,
+        z: Number(position?.z) || 0,
+    };
+}
+
+function updateModelExplodeAnimations() {
+    if (!activeModelExplodeAnimations.size) return;
+    const now = performance.now();
+    const completedImportedModelIds = new Set();
+    let hasCompletedAnimation = false;
+    activeModelExplodeAnimations.forEach((animation, stateKey) => {
+        const object3d = animation.object3d || objectMap.get(animation.targetId);
+        const targetData = animation.targetData || getObjectData(animation.targetId);
+        if (!object3d || !targetData) {
+            activeModelExplodeAnimations.delete(stateKey);
+            return;
+        }
+        const progress =
+            animation.duration <= 0
+                ? 1
+                : THREE.MathUtils.clamp((now - animation.startedAt) / animation.duration, 0, 1);
+        const nextPosition = {
+            x: THREE.MathUtils.lerp(animation.startPosition.x, animation.endPosition.x, progress),
+            y: THREE.MathUtils.lerp(animation.startPosition.y, animation.endPosition.y, progress),
+            z: THREE.MathUtils.lerp(animation.startPosition.z, animation.endPosition.z, progress),
+        };
+        applyModelExplodePosition(targetData, object3d, nextPosition, progress >= 1);
+        if (progress >= 1) {
+            const state = modelExplodeStates.get(stateKey);
+            if (state) {
+                state.expanded = animation.targetExpanded;
+                modelExplodeStates.set(stateKey, state);
+            }
+            if (animation.parentImportedModelId) {
+                completedImportedModelIds.add(animation.parentImportedModelId);
+            }
+            activeModelExplodeAnimations.delete(stateKey);
+            hasCompletedAnimation = true;
+        }
+    });
+    if (completedImportedModelIds.size) {
+        completedImportedModelIds.forEach(refreshImportedModelSelectionProxy);
+        updateSelectionHelpers();
+    }
+    if (hasCompletedAnimation) {
+        emitSceneChange();
+    }
+}
+
+function getModelExplodeParentImportedModelId(targetData) {
+    if (targetData?.type === "importedModel") return targetData.id;
+    const parentData = targetData?.parentId ? getObjectData(targetData.parentId) : null;
+    return parentData?.type === "importedModel" ? parentData.id : "";
+}
+
+function applyModelExplodePosition(targetData, object3d, position, shouldSyncData = false) {
+    object3d.position.set(position.x, position.y, position.z);
+    if (shouldSyncData) {
+        targetData.position = {
+            ...(targetData.position || {}),
+            x: round(position.x),
+            y: round(position.y),
+            z: round(position.z),
+        };
+        object3d.position.set(targetData.position.x, targetData.position.y, targetData.position.z);
+    }
+    if (object3d.matrixAutoUpdate === false) {
+        object3d.updateMatrix();
+    }
+    object3d.matrixWorldNeedsUpdate = true;
+}
+
+function refreshImportedModelSelectionProxy(modelId) {
+    const modelData = getObjectData(modelId);
+    const modelRoot = objectMap.get(modelId);
+    const proxy = selectionRaycastMap.get(modelId);
+    if (!modelData || modelData.type !== "importedModel" || !modelRoot || !proxy) return;
+
+    modelRoot.updateMatrixWorld(true);
+    const box = new THREE.Box3();
+    modelRoot.children.forEach((child) => {
+        if (child === proxy || child.userData?.selectionProxy) return;
+        const childBox = new THREE.Box3().setFromObject(child);
+        if (!childBox.isEmpty()) {
+            box.union(childBox);
+        }
+    });
+    if (box.isEmpty()) return;
+
+    const worldSize = box.getSize(new THREE.Vector3());
+    const worldCenter = box.getCenter(new THREE.Vector3());
+    const worldScale = modelRoot.getWorldScale(new THREE.Vector3());
+    const localSize = new THREE.Vector3(
+        worldSize.x / Math.max(Math.abs(worldScale.x), 0.0001),
+        worldSize.y / Math.max(Math.abs(worldScale.y), 0.0001),
+        worldSize.z / Math.max(Math.abs(worldScale.z), 0.0001),
+    );
+    proxy.geometry?.dispose?.();
+    proxy.geometry = new THREE.BoxGeometry(
+        Math.max(localSize.x, 0.001),
+        Math.max(localSize.y, 0.001),
+        Math.max(localSize.z, 0.001),
+    );
+    proxy.position.copy(modelRoot.worldToLocal(worldCenter));
+    proxy.updateMatrixWorld(true);
+}
+
 function normalizePublicDevicePopoverOptions(options = {}) {
     const source = isPlainRecord(options) ? options : { deviceNo: options };
     const params = source.params;
@@ -1736,6 +2105,9 @@ function getCanvasEventBus() {
 }
 
 function onCanvasEvent(type, handler) {
+    if (type === "modelExplode" && typeof handler !== "function") {
+        return explodeModel(handler);
+    }
     return getCanvasEventBus()?.on?.(type, handler) || (() => {});
 }
 
@@ -2320,7 +2692,7 @@ function getCanvasActiveObjects() {
 }
 
 function installCanvasHet3dGlobal() {
-    if (typeof window === "undefined" || props.mode !== "view" || !props.installGlobal) return;
+    if (typeof window === "undefined" || !props.installGlobal) return;
     previousHet3dDescriptor = Object.getOwnPropertyDescriptor(window, "het3d") || null;
     hasPreviousHet3dDescriptor = Boolean(previousHet3dDescriptor);
     Object.defineProperty(window, "het3d", {
@@ -2330,7 +2702,7 @@ function installCanvasHet3dGlobal() {
 }
 
 function restoreCanvasHet3dGlobal() {
-    if (typeof window === "undefined" || props.mode !== "view" || !props.installGlobal) return;
+    if (typeof window === "undefined" || !props.installGlobal) return;
     if (window.het3d === canvasHet3dApi) {
         if (hasPreviousHet3dDescriptor) {
             Object.defineProperty(window, "het3d", previousHet3dDescriptor);
@@ -2888,6 +3260,15 @@ function getSceneSnapshot() {
 }
 
 defineExpose({
+    get data() {
+        return canvasHet3dApi.data;
+    },
+    get active() {
+        return canvasHet3dApi.active;
+    },
+    setValue: canvasHet3dApi.setValue,
+    showDevicePopover: showPublicDevicePopover,
+    explodeModel,
     loadScene,
     reloadScene: () => loadSceneData(sceneState),
     captureThumbnail,

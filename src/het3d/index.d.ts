@@ -49,6 +49,8 @@ export interface Het3dApi {
     readonly active: unknown[];
     setValue(payload: Record<string, unknown> & { id: string }): Record<string, unknown>;
     showDevicePopover(options?: Record<string, unknown>): boolean;
+    explodeModel(options?: Record<string, unknown>): boolean;
+    on(type: "modelExplode", payload: Record<string, unknown>): boolean;
     on(type: string, handler: Het3dEventHandler): () => void;
     off(type: string, handler: Het3dEventHandler): void;
     once(type: string, handler: Het3dEventHandler): () => void;
