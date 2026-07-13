@@ -7,7 +7,7 @@
         @drop.prevent="handleDrop">
         <div v-if="loading" class="canvas-status">
             <span class="canvas-loading-spinner"></span>
-            <span>正在加载场景</span>
+            <span>Loading scene</span>
         </div>
         <component
             :is="resolvedDevicePopoverComponent"
@@ -25,11 +25,8 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import * as THREE from "three";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
+import * as BABYLON from "@babylonjs/core";
+import "@babylonjs/loaders/glTF";
 import {
     cloneData,
     createId,
@@ -59,62 +56,20 @@ defineOptions({
 });
 
 const props = defineProps({
-    projectId: {
-        type: String,
-        default: "",
-    },
-    sceneId: {
-        type: String,
-        default: "",
-    },
-    sceneData: {
-        type: Object,
-        default: null,
-    },
-    mode: {
-        type: String,
-        default: "edit",
-    },
-    selectedIds: {
-        type: Array,
-        default: () => [],
-    },
-    sceneLoader: {
-        type: Function,
-        default: null,
-    },
-    projectSceneLoader: {
-        type: Function,
-        default: null,
-    },
-    assetLoader: {
-        type: Function,
-        default: null,
-    },
-    requestHandler: {
-        type: Function,
-        default: null,
-    },
-    eventBus: {
-        type: Object,
-        default: null,
-    },
-    devicePopoverComponent: {
-        type: [Object, Function, String],
-        default: null,
-    },
-    notify: {
-        type: Function,
-        default: null,
-    },
-    installGlobal: {
-        type: Boolean,
-        default: true,
-    },
-    dracoDecoderPath: {
-        type: String,
-        default: "/draco/",
-    },
+    projectId: { type: String, default: "" },
+    sceneId: { type: String, default: "" },
+    sceneData: { type: Object, default: null },
+    mode: { type: String, default: "edit" },
+    selectedIds: { type: Array, default: () => [] },
+    sceneLoader: { type: Function, default: null },
+    projectSceneLoader: { type: Function, default: null },
+    assetLoader: { type: Function, default: null },
+    requestHandler: { type: Function, default: null },
+    eventBus: { type: Object, default: null },
+    devicePopoverComponent: { type: [Object, Function, String], default: null },
+    notify: { type: Function, default: null },
+    installGlobal: { type: Boolean, default: true },
+    dracoDecoderPath: { type: String, default: "/draco/" },
 });
 
 const emit = defineEmits([
@@ -132,35 +87,26 @@ const devicePopoverRef = ref(null);
 const sceneBuiltInDevicePopoverRef = ref(null);
 const resolvedDevicePopoverComponent = computed(() => props.devicePopoverComponent || null);
 
-function notifyMessage(type, message, detail) {
-    const payload = { type, message, detail };
-    emit("message", payload);
-    if (typeof props.notify === "function") {
-        props.notify(payload);
-        return;
-    }
-    const logger =
-        type === "error" ? console.error : type === "warning" ? console.warn : console.info;
-    logger(`[het3d] ${message}`, detail || "");
-}
-
-let renderer;
+let canvas;
+let engine;
 let scene;
 let camera;
 let controls;
-let transformControls;
-let transformHelper;
-let contentGroup;
+let gizmoManager;
+let contentRoot;
 let gridHelper;
 let axesHelper;
 let ambientLight;
 let directionalLight;
 let resizeObserver;
-let frameId;
 let rangeUpdateFrameId;
 let sceneState = null;
 let suppressPropSync = false;
 let directDrag = null;
+let axisTransform = null;
+let pendingViewClick = null;
+let pendingEditPointer = null;
+let cameraDrag = null;
 let transformDragging = false;
 let pendingTransformChange = false;
 let previousHet3dDescriptor = null;
@@ -175,32 +121,16 @@ let previewAnimationStartedAt = 0;
 let sceneBuiltInDevicePopoverAnchorId = "";
 let copiedSceneObjects = [];
 let pasteSerial = 0;
-const activeModelExplodeAnimations = new Map();
-const modelExplodeStates = new Map();
 
 const objectMap = new Map();
-const selectionRaycastMap = new Map();
+const selectionPickMap = new Map();
 const selectionHelpers = [];
 const assetSceneCache = new Map();
+const gizmoObserverDisposers = [];
+const activeModelExplodeAnimations = new Map();
+const modelExplodeStates = new Map();
 const maxSelectionHelpers = 80;
-const selectionHelperColor = 0xffc400;
-const selectionHelperRenderOrder = 1000;
-const raycaster = new THREE.Raycaster();
-const pointer = new THREE.Vector2();
-const dragPlane = new THREE.Plane();
-const dracoLoader = new DRACOLoader();
-const gltfLoader = new GLTFLoader();
-const noopRaycast = () => {};
-const importedModelSelectionMaterial = new THREE.MeshBasicMaterial({
-    transparent: true,
-    opacity: 0,
-    depthWrite: false,
-    colorWrite: false,
-});
-
-dracoLoader.setDecoderPath(props.dracoDecoderPath);
-dracoLoader.setDecoderConfig({ type: "wasm" });
-gltfLoader.setDRACOLoader(dracoLoader);
+const selectionHelperColor = BABYLON.Color3.FromHexString("#ffc400");
 
 const canvasHet3dApi = createHet3dApi({
     getSceneData: () => sceneState,
@@ -220,30 +150,28 @@ const canvasHet3dApi = createHet3dApi({
 });
 
 onMounted(async () => {
-    initThree();
+    initBabylon();
     installCanvasHet3dGlobal();
     await loadInitialScene();
-    animate();
 });
 
 onBeforeUnmount(() => {
     restoreCanvasHet3dGlobal();
     clearCanvasHttpsPolling();
-    cancelAnimationFrame(frameId);
     cancelAnimationFrame(rangeUpdateFrameId);
     resizeObserver?.disconnect();
-    renderer?.domElement?.removeEventListener("pointerdown", handlePointerDown);
-    renderer?.domElement?.removeEventListener("dblclick", handleDoubleClick);
+    canvas?.removeEventListener("pointerdown", handlePointerDown);
+    canvas?.removeEventListener("dblclick", handleDoubleClick);
+    canvas?.removeEventListener("wheel", handleCanvasWheel);
+    canvas?.removeEventListener("contextmenu", handleCanvasContextMenu);
     window.removeEventListener("pointermove", handlePointerMove);
     window.removeEventListener("pointerup", handlePointerUp);
-    if (transformHelper) {
-        scene?.remove(transformHelper);
-    }
-    transformControls?.dispose();
-    dracoLoader.dispose();
-    importedModelSelectionMaterial.dispose();
-    controls?.dispose();
-    renderer?.dispose();
+    clearSelectionHelpers();
+    clearGizmoObservers();
+    gizmoManager?.dispose();
+    engine?.stopRenderLoop();
+    scene?.dispose();
+    engine?.dispose();
     hostRef.value?.replaceChildren();
 });
 
@@ -264,63 +192,73 @@ watch(
     { deep: true },
 );
 
-function initThree() {
-    scene = new THREE.Scene();
-    contentGroup = new THREE.Group();
-    scene.add(contentGroup);
+function initBabylon() {
+    canvas = document.createElement("canvas");
+    canvas.className = "scene-canvas-element";
+    hostRef.value.appendChild(canvas);
+
+    engine = new BABYLON.Engine(canvas, true, {
+        preserveDrawingBuffer: true,
+        stencil: true,
+        antialias: true,
+    });
+    engine.setHardwareScalingLevel(Math.max(1 / Math.min(window.devicePixelRatio || 1, 2), 0.5));
+
+    scene = new BABYLON.Scene(engine);
+    scene.useRightHandedSystem = false;
+    scene.skipPointerMovePicking = true;
+    contentRoot = new BABYLON.TransformNode("contentRoot", scene);
 
     const { width, height } = getHostSize();
-    camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
-
-    renderer = new THREE.WebGLRenderer({
-        antialias: true,
-        preserveDrawingBuffer: true,
-        logarithmicDepthBuffer: true,
+    camera = new BABYLON.ArcRotateCamera(
+        "camera",
+        -Math.PI / 4,
+        Math.PI / 3,
+        8,
+        BABYLON.Vector3.Zero(),
+        scene,
+    );
+    controls = camera;
+    camera.minZ = 0.01;
+    camera.maxZ = 100000;
+    camera.lowerRadiusLimit = 0.0001;
+    camera.upperRadiusLimit = null;
+    camera.panningSensibility = 85;
+    camera.attachControl(canvas, true);
+    disableDefaultPointerCameraInput();
+    disableDefaultWheelCameraInput();
+    applyCameraSettings({
+        ...defaultCamera(),
+        position: { x: 5, y: 5, z: 6 },
+        target: { x: 0, y: 0.5, z: 0 },
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(width, height);
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    hostRef.value.appendChild(renderer.domElement);
 
-    controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-    controls.addEventListener("change", syncCameraToState);
-
-    transformControls = new TransformControls(camera, renderer.domElement);
-    transformControls.addEventListener("dragging-changed", (event) => {
-        transformDragging = event.value;
-        controls.enabled = !event.value;
-        if (!event.value && pendingTransformChange) {
-            pendingTransformChange = false;
-            syncSelectedObjectsFromThree();
-            scheduleCameraRangeUpdate();
-            emitSceneChange();
-        }
-    });
-    transformControls.addEventListener("objectChange", () => {
-        if (transformDragging) {
-            pendingTransformChange = true;
-            syncSelectedObjectsFromThree(false);
-            return;
-        }
-        syncSelectedObjectsFromThree();
-        scheduleCameraRangeUpdate();
-        emitSceneChange();
-    });
-    transformHelper = transformControls.getHelper();
-    scene.add(transformHelper);
+    gizmoManager = new BABYLON.GizmoManager(scene);
+    gizmoManager.usePointerToAttachGizmos = false;
+    gizmoManager.clearGizmoOnEmptyPointerEvent = false;
+    gizmoManager.scaleRatio = 1.1;
+    setTransformMode("translate");
 
     applyCanvasSettings(props.sceneData?.canvas || defaultCanvas());
     applyLightSettings(defaultLights());
 
-    renderer.domElement.addEventListener("pointerdown", handlePointerDown);
-    renderer.domElement.addEventListener("dblclick", handleDoubleClick);
+    canvas.addEventListener("pointerdown", handlePointerDown);
+    canvas.addEventListener("dblclick", handleDoubleClick);
+    canvas.addEventListener("wheel", handleCanvasWheel, { passive: false });
+    canvas.addEventListener("contextmenu", handleCanvasContextMenu);
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
 
     resizeObserver = new ResizeObserver(resizeRenderer);
     resizeObserver.observe(hostRef.value);
+
+    engine.runRenderLoop(() => {
+        updatePreviewAnimations();
+        updateModelExplodeAnimations();
+        updateSceneBuiltInDevicePopoverAnchor();
+        scene.render();
+    });
+    engine.resize(width, height);
 }
 
 async function loadInitialScene() {
@@ -346,10 +284,7 @@ async function loadScene(sceneId) {
 
 async function loadProjectScene(projectId) {
     if (!props.projectSceneLoader) {
-        notifyMessage(
-            "warning",
-            "projectId was provided, but no projectSceneLoader prop is configured",
-        );
+        notifyMessage("warning", "projectId was provided, but no projectSceneLoader prop is configured");
         return null;
     }
     return (await props.projectSceneLoader(projectId)) || null;
@@ -363,12 +298,13 @@ async function loadSceneData(data) {
     modelExplodeStates.clear();
     resetPreviewAnimationRuntime();
     hideAllDevicePopovers();
+
     const migratedToLayers = await migrateImportedMeshesToLayers(sceneState);
     objectMap.clear();
-    selectionRaycastMap.clear();
+    selectionPickMap.clear();
     clearSelectionHelpers();
-    transformControls?.detach();
-    contentGroup.clear();
+    detachGizmo();
+    clearContentRoot();
 
     applyCanvasSettings(sceneState.canvas);
     applyLightSettings(sceneState.lights);
@@ -376,9 +312,9 @@ async function loadSceneData(data) {
 
     for (const objectData of sceneState.models) {
         if (!isRenderableObject(objectData)) continue;
-        const object3d = await createThreeObject(objectData);
-        objectMap.set(objectData.id, object3d);
-        contentGroup.add(object3d);
+        const node = await createBabylonObject(objectData);
+        objectMap.set(objectData.id, node);
+        node.parent = contentRoot;
     }
 
     updateCameraRangeToScene();
@@ -387,123 +323,112 @@ async function loadSceneData(data) {
     loading.value = false;
     restartCanvasHttpsPolling({ immediate: props.mode === "view" });
     emit("scene-ready", { scene: normalizeSceneModelSources(sceneState) });
-    if (migratedToLayers) {
-        emitSceneChange();
-    }
+    if (migratedToLayers) emitSceneChange();
+}
+
+function clearContentRoot() {
+    [...contentRoot.getChildren()].forEach((node) => node.dispose(false, true));
 }
 
 function isRenderableObject(objectData) {
-    return (
-        !["importedLayer", "importedMesh"].includes(objectData.type) && objectData.visible !== false
-    );
+    return !["importedLayer", "importedMesh"].includes(objectData.type) && objectData.visible !== false;
 }
 
-async function createThreeObject(objectData) {
-    let object3d;
+async function createBabylonObject(objectData) {
+    let node;
     const color = objectData.material?.color || "#4f7cff";
 
     if (objectData.type === "sphere") {
-        object3d = new THREE.Mesh(
-            new THREE.SphereGeometry(0.55, 36, 18),
-            createStandardMaterial(color),
-        );
+        node = BABYLON.MeshBuilder.CreateSphere("sphere", { diameter: 1.1, segments: 36 }, scene);
+        node.material = createStandardMaterial(color);
     } else if (objectData.type === "cylinder") {
-        object3d = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.45, 0.45, 1.2, 36),
-            createStandardMaterial(color),
+        node = BABYLON.MeshBuilder.CreateCylinder(
+            "cylinder",
+            { height: 1.2, diameterTop: 0.9, diameterBottom: 0.9, tessellation: 36 },
+            scene,
         );
+        node.material = createStandardMaterial(color);
     } else if (objectData.type === "plane") {
-        object3d = new THREE.Mesh(
-            new THREE.PlaneGeometry(1.6, 1.6),
-            createStandardMaterial(color, true),
-        );
+        node = BABYLON.MeshBuilder.CreatePlane("plane", { width: 1.6, height: 1.6, sideOrientation: BABYLON.Mesh.DOUBLESIDE }, scene);
+        node.material = createStandardMaterial(color, true);
     } else if (objectData.type === "icon") {
-        object3d = new THREE.Sprite(
-            createSpriteMaterial(
-                objectData.material?.symbol || "●",
-                color,
-                objectData.material?.shape,
-            ),
-        );
+        node = BABYLON.MeshBuilder.CreatePlane("icon", { width: 1, height: 1, sideOrientation: BABYLON.Mesh.DOUBLESIDE }, scene);
+        node.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+        node.material = createIconMaterial(objectData.material?.symbol || "*", color, objectData.material?.shape);
     } else if (objectData.type === "image") {
-        object3d = new THREE.Mesh(
-            new THREE.PlaneGeometry(1.8, 1.15),
-            new THREE.MeshStandardMaterial({
-                color,
-                map: createLabelTexture(objectData.name, color),
-                side: THREE.DoubleSide,
-                roughness: 0.65,
-                metalness: 0.02,
-            }),
-        );
+        node = BABYLON.MeshBuilder.CreatePlane("image", { width: 1.8, height: 1.15, sideOrientation: BABYLON.Mesh.DOUBLESIDE }, scene);
+        node.material = createLabelMaterial(objectData.name, color);
     } else if (objectData.type === "importedModel") {
-        object3d = await createImportedModel(objectData);
+        node = await createImportedModel(objectData);
     } else {
-        object3d = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), createStandardMaterial(color));
+        node = BABYLON.MeshBuilder.CreateBox("box", { size: 1 }, scene);
+        node.material = createStandardMaterial(color);
     }
 
-    object3d.name = objectData.name;
-    object3d.userData.sceneObjectId = objectData.id;
-    object3d.position.set(objectData.position.x, objectData.position.y, objectData.position.z);
-    object3d.rotation.set(objectData.rotation.x, objectData.rotation.y, objectData.rotation.z);
-    object3d.scale.set(objectData.scale.x, objectData.scale.y, objectData.scale.z);
-    object3d.visible = objectData.visible !== false;
+    node.name = objectData.name;
+    setSceneObjectMetadata(node, objectData.id);
+    applyTransform(node, objectData);
+    node.setEnabled(objectData.visible !== false);
     if (objectData.type !== "importedModel") {
-        object3d.traverse?.((child) => {
-            child.userData.sceneObjectId = objectData.id;
+        getNodeMeshes(node).forEach((mesh) => {
+            setSceneObjectMetadata(mesh, objectData.id);
+            mesh.isPickable = true;
         });
     }
-    return object3d;
+    return node;
 }
 
 function createStandardMaterial(color, doubleSide = false) {
-    return new THREE.MeshStandardMaterial({
-        color,
-        roughness: 0.58,
-        metalness: 0.08,
-        side: doubleSide ? THREE.DoubleSide : THREE.FrontSide,
-    });
+    const material = new BABYLON.StandardMaterial(`mat_${createId("m")}`, scene);
+    material.diffuseColor = BABYLON.Color3.FromHexString(color);
+    material.specularColor = new BABYLON.Color3(0.12, 0.12, 0.12);
+    material.backFaceCulling = !doubleSide;
+    return material;
 }
 
-function createSpriteMaterial(symbol, color, shape = "circle") {
-    return new THREE.SpriteMaterial({
-        map: createSymbolTexture(symbol, color, shape),
-        transparent: true,
-        depthWrite: false,
-    });
+function createIconMaterial(symbol, color, shape = "circle") {
+    const texture = createSymbolTexture(symbol, color, shape);
+    const material = new BABYLON.StandardMaterial(`icon_${createId("m")}`, scene);
+    material.diffuseTexture = texture;
+    material.opacityTexture = texture;
+    material.useAlphaFromDiffuseTexture = true;
+    material.diffuseTexture.hasAlpha = true;
+    material.specularColor = BABYLON.Color3.Black();
+    material.backFaceCulling = false;
+    return material;
+}
+
+function createLabelMaterial(label, color) {
+    const texture = createLabelTexture(label, color);
+    const material = new BABYLON.StandardMaterial(`label_${createId("m")}`, scene);
+    material.diffuseTexture = texture;
+    material.specularColor = BABYLON.Color3.Black();
+    material.backFaceCulling = false;
+    return material;
 }
 
 function createSymbolTexture(symbol, color, shape = "circle") {
-    const canvas = document.createElement("canvas");
-    canvas.width = 512;
-    canvas.height = 512;
-    const context = canvas.getContext("2d");
+    const texture = new BABYLON.DynamicTexture(`symbol_${createId("t")}`, { width: 512, height: 512 }, scene, false);
+    const context = texture.getContext();
     context.clearRect(0, 0, 512, 512);
     context.fillStyle = color;
     drawIconShape(context, shape);
-
-    const text = String(symbol || "●").trim() || "●";
+    const text = String(symbol || "*").trim() || "*";
     const fontFamily = 'Arial, "Microsoft YaHei", sans-serif';
-    const maxWidth = 330;
-    const maxHeight = 180;
     let fontSize = 150;
     context.fillStyle = "#ffffff";
     context.textAlign = "center";
     context.textBaseline = "middle";
-
     while (fontSize > 42) {
         context.font = `700 ${fontSize}px ${fontFamily}`;
         const metrics = context.measureText(text);
-        if (metrics.width <= maxWidth && fontSize <= maxHeight) break;
+        if (metrics.width <= 330 && fontSize <= 180) break;
         fontSize -= 6;
     }
-
     context.font = `700 ${fontSize}px ${fontFamily}`;
-    context.textAlign = "center";
-    context.textBaseline = "middle";
     context.fillText(text, 256, 258);
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.update();
+    texture.hasAlpha = true;
     return texture;
 }
 
@@ -541,27 +466,54 @@ function drawRoundedRect(context, x, y, width, height, radius) {
 }
 
 function createLabelTexture(label, color) {
-    const canvas = document.createElement("canvas");
-    canvas.width = 512;
-    canvas.height = 320;
-    const context = canvas.getContext("2d");
+    const texture = new BABYLON.DynamicTexture(`label_${createId("t")}`, { width: 512, height: 320 }, scene, false);
+    const context = texture.getContext();
     context.fillStyle = color;
-    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillRect(0, 0, 512, 320);
     context.fillStyle = "rgba(255,255,255,0.18)";
-    for (let x = 0; x < canvas.width; x += 32) {
-        context.fillRect(x, 0, 1, canvas.height);
-    }
-    for (let y = 0; y < canvas.height; y += 32) {
-        context.fillRect(0, y, canvas.width, 1);
-    }
+    for (let x = 0; x < 512; x += 32) context.fillRect(x, 0, 1, 320);
+    for (let y = 0; y < 320; y += 32) context.fillRect(0, y, 512, 1);
     context.fillStyle = "#ffffff";
     context.font = "bold 38px Arial";
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillText(label.slice(0, 12), 256, 160);
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
+    context.fillText(String(label || "").slice(0, 12), 256, 160);
+    texture.update();
     return texture;
+}
+
+function setSceneObjectMetadata(node, objectId) {
+    node.metadata = {
+        ...(node.metadata || {}),
+        sceneObjectId: objectId,
+    };
+}
+
+function applyTransform(node, objectData) {
+    node.position = toVector3(objectData.position, { x: 0, y: 0, z: 0 });
+    node.rotationQuaternion = null;
+    node.rotation = toVector3(objectData.rotation, { x: 0, y: 0, z: 0 });
+    node.scaling = toVector3(objectData.scale, { x: 1, y: 1, z: 1 });
+}
+
+function toVector3(value, fallback) {
+    return new BABYLON.Vector3(
+        Number.isFinite(Number(value?.x)) ? Number(value.x) : fallback.x,
+        Number.isFinite(Number(value?.y)) ? Number(value.y) : fallback.y,
+        Number.isFinite(Number(value?.z)) ? Number(value.z) : fallback.z,
+    );
+}
+
+function vectorToData(vector) {
+    return {
+        x: round(vector?.x || 0),
+        y: round(vector?.y || 0),
+        z: round(vector?.z || 0),
+    };
+}
+
+function getNodeRotation(node) {
+    return node.rotationQuaternion ? node.rotationQuaternion.toEulerAngles() : node.rotation;
 }
 
 function getObjectModelPath(objectData, visited = new Set()) {
@@ -583,7 +535,7 @@ function readBlobAsDataUrl(blob) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = () => reject(reader.error || new Error("文件读取失败"));
+        reader.onerror = () => reject(reader.error || new Error("File read failed"));
         reader.readAsDataURL(blob);
     });
 }
@@ -613,94 +565,114 @@ function applyModelReferenceToObjectData(objectData, modelReference, { keepModel
     }
 }
 
-async function getCachedGltfForObject(objectData) {
+async function getCachedModelMetadataForObject(objectData) {
     const modelPath = getObjectModelPath(objectData);
     if (modelPath) {
-        return getCachedGltfModelSource({
-            key: `path:${modelPath}`,
-            url: modelPath,
-        });
+        return getCachedModelMetadata({ key: `path:${modelPath}`, url: modelPath });
     }
-
-    if (!objectData?.assetId) return null;
-    if (!props.assetLoader) return null;
+    if (!objectData?.assetId || !props.assetLoader) return null;
     const asset = await props.assetLoader(objectData.assetId);
     let assetPath = asset?.modelPath || asset?.sourceUrl || asset?.metadata?.sourceUrl || "";
-    if (!assetPath && asset?.blob) {
-        assetPath = await readBlobAsDataUrl(asset.blob);
-    }
-    if (assetPath) {
-        applyModelReferenceToObjectData(objectData, { modelPath: assetPath }, {
-            keepModelPath: objectData.type === "importedModel",
-        });
-        return getCachedGltfModelSource({
-            key: `path:${assetPath}`,
-            url: assetPath,
-        });
-    }
-    return null;
+    if (!assetPath && asset?.blob) assetPath = await readBlobAsDataUrl(asset.blob);
+    if (!assetPath) return null;
+    applyModelReferenceToObjectData(objectData, { modelPath: assetPath }, {
+        keepModelPath: objectData.type === "importedModel",
+    });
+    return getCachedModelMetadata({ key: `path:${assetPath}`, url: assetPath });
+}
+
+async function getCachedModelMetadata({ key, url }) {
+    if (!key || !url) return null;
+    if (assetSceneCache.has(key)) return assetSceneCache.get(key);
+    const runtime = await importModelRuntime(url, { enabled: false });
+    const metadata = createCachedModelMetadata(runtime.content, runtime.meshes);
+    runtime.root.dispose(false, true);
+    assetSceneCache.set(key, metadata);
+    return metadata;
 }
 
 async function createImportedModel(objectData) {
-    const cachedModel = await getCachedGltfForObject(objectData);
-    if (!cachedModel) {
-        return new THREE.Group();
-    }
+    const modelPath = getObjectModelPath(objectData);
+    if (!modelPath && !objectData?.assetId) return new BABYLON.TransformNode("emptyModel", scene);
+    if (!modelPath && objectData.assetId) await getCachedModelMetadataForObject(objectData);
+    const source = getObjectModelPath(objectData);
+    if (!source) return new BABYLON.TransformNode("emptyModel", scene);
 
-    const { scene: sourceScene } = cachedModel;
-    const modelContent = sourceScene.clone(true);
-    const modelRoot = new THREE.Group();
+    const runtime = await importModelRuntime(source);
+    const modelRoot = runtime.root;
+    const modelContent = runtime.content;
     const originOffset = getModelOriginOffset(objectData, modelContent);
-    modelContent.position.set(originOffset.x, originOffset.y, originOffset.z);
-    modelRoot.add(modelContent);
-    const clonedMeshes = collectMeshes(modelContent);
-    const childObjects = Array.isArray(objectData.children) ? objectData.children : [];
-    const layerObjects = childObjects.filter((object) => object.type === "importedLayer");
+    modelContent.position = toVector3(originOffset, { x: 0, y: 0, z: 0 });
 
+    const layerObjects = (objectData.children || []).filter((object) => object.type === "importedLayer");
+    const metadata = createCachedModelMetadata(modelContent, runtime.meshes);
     if (layerObjects.length) {
-        mapImportedLayersToModel(modelContent, clonedMeshes, layerObjects);
+        mapImportedLayersToModel(modelContent, runtime.meshes, metadata.layerEntries, layerObjects);
     } else {
-        mapLegacyMeshesToModel(clonedMeshes, childObjects);
+        mapLegacyMeshesToModel(runtime.meshes, objectData.children || []);
     }
-
     if (shouldApplyMaterialColor(objectData)) {
         applyMaterialColorToObject(modelRoot, objectData.material?.color);
     }
-
     optimizeImportedModelRuntime(modelRoot);
     addImportedModelSelectionProxy(modelRoot, modelContent, objectData.id);
-    modelRoot.updateMatrixWorld(true);
     return modelRoot;
 }
 
-function mapImportedLayersToModel(modelRoot, clonedMeshes, layerObjects) {
-    const taggedLayerNodes = collectTaggedLayerNodes(modelRoot);
-    const layerEntries = taggedLayerNodes.size
-        ? Array.from(taggedLayerNodes.entries()).map(([layerIndex, node]) => ({
-            node,
-            layerIndex,
-            meshIndices: [],
-        }))
-        : collectModelLayers(modelRoot, clonedMeshes);
-    const meshBySourceIndex = createMeshBySourceIndex(clonedMeshes);
-    const childByLayerIndex = new Map(
-        layerObjects.map((object) => [object.source?.layerIndex, object]),
-    );
+async function importModelRuntime(source, { enabled = true } = {}) {
+    const result = await BABYLON.ImportMeshAsync(source, scene);
+    const nodes = uniqueNodes([...result.meshes, ...(result.transformNodes || [])]);
+    const nodeSet = new Set(nodes);
+    const root = new BABYLON.TransformNode(`imported_${createId("root")}`, scene);
+    const content = new BABYLON.TransformNode("modelContent", scene);
+    content.parent = root;
+    nodes
+        .filter((node) => !node.parent || !nodeSet.has(node.parent))
+        .forEach((node) => {
+            node.parent = content;
+        });
+    root.setEnabled(enabled);
+    return {
+        root,
+        content,
+        meshes: result.meshes.filter((mesh) => mesh instanceof BABYLON.AbstractMesh),
+        animationGroups: result.animationGroups || [],
+    };
+}
+
+function uniqueNodes(nodes) {
+    return Array.from(new Set(nodes.filter(Boolean)));
+}
+
+function createCachedModelMetadata(root, meshes = collectMeshes(root)) {
+    const layerEntries = collectModelLayers(root, meshes);
+    markImportedModelSourceIndices(meshes, layerEntries);
+    return { meshes, layerEntries };
+}
+
+function markImportedModelSourceIndices(meshes, layerEntries) {
+    meshes.forEach((mesh, meshIndex) => {
+        mesh.metadata = { ...(mesh.metadata || {}), importedMeshIndex: meshIndex };
+    });
+    layerEntries.forEach((entry) => {
+        entry.node.metadata = { ...(entry.node.metadata || {}), importedLayerIndex: entry.layerIndex };
+    });
+}
+
+function mapImportedLayersToModel(modelRoot, meshes, layerEntries, layerObjects) {
+    const meshBySourceIndex = createMeshBySourceIndex(meshes);
+    const childByLayerIndex = new Map(layerObjects.map((object) => [object.source?.layerIndex, object]));
     layerEntries.forEach((entry) => {
         const layerData = childByLayerIndex.get(entry.layerIndex);
         if (!layerData) {
-            entry.node.visible = false;
+            entry.node.setEnabled(false);
             return;
         }
-
         entry.node.name = layerData.name;
-        entry.node.userData.sceneObjectId = layerData.id;
-        entry.node.userData.het3dLayerRoot = true;
-        entry.node.matrixAutoUpdate = true;
-        entry.node.position.set(layerData.position.x, layerData.position.y, layerData.position.z);
-        entry.node.rotation.set(layerData.rotation.x, layerData.rotation.y, layerData.rotation.z);
-        entry.node.scale.set(layerData.scale.x, layerData.scale.y, layerData.scale.z);
-        entry.node.visible = layerData.visible !== false;
+        setSceneObjectMetadata(entry.node, layerData.id);
+        entry.node.metadata.het3dLayerRoot = true;
+        applyTransform(entry.node, layerData);
+        entry.node.setEnabled(layerData.visible !== false);
         objectMap.set(layerData.id, entry.node);
 
         const meshIndices = Array.isArray(layerData.source?.meshIndices)
@@ -709,99 +681,77 @@ function mapImportedLayersToModel(modelRoot, clonedMeshes, layerObjects) {
         meshIndices.forEach((meshIndex) => {
             const mesh = meshBySourceIndex.get(meshIndex);
             if (!mesh) return;
-            mesh.userData.sceneObjectId = layerData.id;
+            setSceneObjectMetadata(mesh, layerData.id);
         });
-
         if (shouldApplyMaterialColor(layerData)) {
             applyMaterialColorToObject(entry.node, layerData.material?.color);
         }
     });
 }
 
-function collectTaggedLayerNodes(root) {
-    const layerNodes = new Map();
-    root.traverse((node) => {
-        const layerIndex = Number(node.userData?.importedLayerIndex);
-        if (Number.isFinite(layerIndex)) {
-            layerNodes.set(layerIndex, node);
-        }
-    });
-    return layerNodes;
-}
-
 function createMeshBySourceIndex(meshes) {
     return new Map(
         meshes.map((mesh, index) => {
-            const sourceIndex = Number(mesh.userData?.importedMeshIndex);
+            const sourceIndex = Number(mesh.metadata?.importedMeshIndex);
             return [Number.isFinite(sourceIndex) ? sourceIndex : index, mesh];
         }),
     );
 }
 
 function optimizeImportedModelRuntime(modelRoot) {
-    modelRoot.traverse((node) => {
-        if (!node.isMesh || node.userData?.selectionProxy || node.userData?.het3dLayerRoot) return;
-        node.updateMatrix();
-        node.matrixAutoUpdate = false;
-        node.raycast = noopRaycast;
+    getNodeMeshes(modelRoot).forEach((mesh) => {
+        if (mesh.metadata?.selectionProxy) return;
+        mesh.isPickable = false;
     });
 }
 
 function addImportedModelSelectionProxy(modelRoot, modelContent, objectId) {
-    modelContent.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(modelContent);
-    if (box.isEmpty()) return;
-
-    const size = new THREE.Vector3();
-    const center = new THREE.Vector3();
-    box.getSize(size);
-    box.getCenter(center);
-
-    const proxy = new THREE.Mesh(
-        new THREE.BoxGeometry(
-            Math.max(size.x, 0.001),
-            Math.max(size.y, 0.001),
-            Math.max(size.z, 0.001),
-        ),
-        importedModelSelectionMaterial,
+    const bounds = getNodeBounds(modelContent);
+    if (isBoundsEmpty(bounds)) return;
+    const size = boundsSize(bounds);
+    const center = boundsCenter(bounds);
+    const proxy = BABYLON.MeshBuilder.CreateBox(
+        `${modelRoot.name || "importedModel"}_selectionProxy`,
+        { width: Math.max(size.x, 0.001), height: Math.max(size.y, 0.001), depth: Math.max(size.z, 0.001) },
+        scene,
     );
-    proxy.name = `${modelRoot.name || "importedModel"}_selectionProxy`;
-    proxy.position.copy(center);
-    proxy.userData.sceneObjectId = objectId;
-    proxy.userData.selectionProxy = true;
-    modelRoot.add(proxy);
-    selectionRaycastMap.set(objectId, proxy);
+    const material = new BABYLON.StandardMaterial(`proxy_${createId("m")}`, scene);
+    material.alpha = 0;
+    material.disableLighting = true;
+    proxy.material = material;
+    proxy.visibility = 0;
+    proxy.parent = modelRoot;
+    proxy.position = worldToLocal(modelRoot, center);
+    proxy.isPickable = true;
+    proxy.metadata = { sceneObjectId: objectId, selectionProxy: true };
+    selectionPickMap.set(objectId, proxy);
 }
 
-function mapLegacyMeshesToModel(clonedMeshes, childObjects) {
-    const childByMeshIndex = new Map(
-        childObjects.map((object) => [object.source?.meshIndex, object]),
-    );
-
-    clonedMeshes.forEach((mesh, meshIndex) => {
+function mapLegacyMeshesToModel(meshes, childObjects) {
+    const childByMeshIndex = new Map(childObjects.map((object) => [object.source?.meshIndex, object]));
+    meshes.forEach((mesh, meshIndex) => {
         const childData = childByMeshIndex.get(meshIndex);
         if (!childData) {
-            mesh.visible = false;
+            mesh.setEnabled(false);
             return;
         }
-
         mesh.name = childData.name;
-        mesh.userData.sceneObjectId = childData.id;
+        setSceneObjectMetadata(mesh, childData.id);
         objectMap.set(childData.id, mesh);
-        mesh.visible = childData.visible !== false;
-        mesh.position.set(childData.position.x, childData.position.y, childData.position.z);
-        mesh.rotation.set(childData.rotation.x, childData.rotation.y, childData.rotation.z);
-        mesh.scale.set(childData.scale.x, childData.scale.y, childData.scale.z);
+        mesh.setEnabled(childData.visible !== false);
+        applyTransform(mesh, childData);
         applyMaterialColor(mesh, childData.material?.color);
     });
 }
 
 function collectMeshes(root) {
-    const meshes = [];
-    root.traverse((node) => {
-        if (node.isMesh) meshes.push(node);
-    });
-    return meshes;
+    return getNodeMeshes(root).filter((mesh) => !mesh.metadata?.selectionProxy);
+}
+
+function getNodeMeshes(node) {
+    if (!node) return [];
+    const meshes = node instanceof BABYLON.AbstractMesh ? [node] : [];
+    return meshes.concat(node.getChildMeshes?.(false) || []);
 }
 
 function collectModelLayers(root, meshes = collectMeshes(root)) {
@@ -809,15 +759,13 @@ function collectModelLayers(root, meshes = collectMeshes(root)) {
     return getLayerCandidates(root)
         .map((node, layerIndex) => {
             const meshIndices = [];
-            node.traverse((child) => {
-                if (child.isMesh && meshIndexByNode.has(child)) {
-                    meshIndices.push(meshIndexByNode.get(child));
-                }
+            getNodeMeshes(node).forEach((child) => {
+                if (meshIndexByNode.has(child)) meshIndices.push(meshIndexByNode.get(child));
             });
             return {
                 node,
                 layerIndex,
-                name: node.name || `图层 ${layerIndex + 1}`,
+                name: node.name || `Layer ${layerIndex + 1}`,
                 meshIndices,
                 meshCount: meshIndices.length,
             };
@@ -825,53 +773,19 @@ function collectModelLayers(root, meshes = collectMeshes(root)) {
         .filter((entry) => entry.meshCount > 0);
 }
 
-function createCachedGltfModelSource(sourceScene) {
-    sourceScene.updateMatrixWorld(true);
-    const meshes = collectMeshes(sourceScene);
-    const layerEntries = collectModelLayers(sourceScene, meshes);
-    markImportedModelSourceIndices(meshes, layerEntries);
-    return {
-        scene: sourceScene,
-        meshes,
-        layerEntries,
-    };
-}
-
-function markImportedModelSourceIndices(meshes, layerEntries) {
-    meshes.forEach((mesh, meshIndex) => {
-        mesh.userData = {
-            ...(mesh.userData || {}),
-            importedMeshIndex: meshIndex,
-        };
-    });
-    layerEntries.forEach((entry) => {
-        entry.node.userData = {
-            ...(entry.node.userData || {}),
-            importedLayerIndex: entry.layerIndex,
-        };
-    });
-}
-
 function getLayerCandidates(root) {
-    let candidates = root.children.filter((child) => hasMeshDescendant(child));
-
+    let candidates = root.getChildren().filter((child) => hasMeshDescendant(child));
     while (candidates.length === 1) {
-        const nestedGroups = candidates[0].children.filter(
-            (child) => !child.isMesh && hasMeshDescendant(child),
-        );
+        const nestedGroups = candidates[0].getChildren?.().filter((child) => hasMeshDescendant(child)) || [];
         if (nestedGroups.length <= 1) break;
         candidates = nestedGroups;
     }
-
-    if (!candidates.length && hasMeshDescendant(root)) {
-        candidates = [root];
-    }
+    if (!candidates.length && hasMeshDescendant(root)) candidates = [root];
     return candidates;
 }
 
 function hasMeshDescendant(node) {
-    if (node.isMesh) return true;
-    return node.children?.some((child) => hasMeshDescendant(child)) || false;
+    return getNodeMeshes(node).some((mesh) => !mesh.metadata?.selectionProxy);
 }
 
 function createLayerObjectData(entry, parent, meshes) {
@@ -880,21 +794,9 @@ function createLayerObjectData(entry, parent, meshes) {
         name: entry.name,
         nodeType: "layer",
         parentId: parent.id,
-        position: {
-            x: round(entry.node.position.x),
-            y: round(entry.node.position.y),
-            z: round(entry.node.position.z),
-        },
-        rotation: {
-            x: round(entry.node.rotation.x),
-            y: round(entry.node.rotation.y),
-            z: round(entry.node.rotation.z),
-        },
-        scale: {
-            x: round(entry.node.scale.x),
-            y: round(entry.node.scale.y),
-            z: round(entry.node.scale.z),
-        },
+        position: vectorToData(entry.node.position),
+        rotation: vectorToData(getNodeRotation(entry.node)),
+        scale: vectorToData(entry.node.scaling),
         material: { color },
         source: {
             layerIndex: entry.layerIndex,
@@ -915,27 +817,21 @@ function removeLayerMeshObjects(layerObject) {
     const meshChildren = children.filter((child) => child?.type === "importedMesh");
     const otherChildren = children.filter((child) => child?.type !== "importedMesh");
     const source = { ...(layerObject.source || {}) };
-
     if ((!Array.isArray(source.meshes) || !source.meshes.length) && meshChildren.length) {
         source.meshes = meshChildren
             .map((meshObject) => {
                 const meshIndex = Number(meshObject?.source?.meshIndex);
-                if (!Number.isFinite(meshIndex)) return null;
-                return {
-                    meshIndex,
-                    name: meshObject.name || `Mesh ${meshIndex + 1}`,
-                };
+                return Number.isFinite(meshIndex)
+                    ? { meshIndex, name: meshObject.name || `Mesh ${meshIndex + 1}` }
+                    : null;
             })
             .filter(Boolean);
     }
     if ((!Array.isArray(source.meshIndices) || !source.meshIndices.length) && Array.isArray(source.meshes)) {
         source.meshIndices = source.meshes.map((mesh) => mesh.meshIndex);
     }
-
     layerObject.children = otherChildren;
-    layerObject.source = {
-        ...source,
-    };
+    layerObject.source = { ...source };
     delete layerObject.source.meshObjectsReady;
     delete layerObject.source.meshObjectMode;
     delete layerObject.source.meshObjectLimit;
@@ -954,12 +850,11 @@ function removeModelMeshObjects(modelObject, meshCount) {
         .forEach(removeLayerMeshObjects);
 }
 
-function getModelOriginOffset(objectData, object3d) {
+function getModelOriginOffset(objectData, node) {
     if (objectData.source?.originOffset && objectData.source?.originMode === "xz-center-y-bottom") {
         return objectData.source.originOffset;
     }
-
-    const originOffset = getOriginOffsetForObject(object3d);
+    const originOffset = getOriginOffsetForObject(node);
     objectData.source = {
         ...(objectData.source || {}),
         originOffset,
@@ -968,27 +863,20 @@ function getModelOriginOffset(objectData, object3d) {
     return originOffset;
 }
 
-function getOriginOffsetForObject(object3d) {
-    object3d.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(object3d);
-    if (box.isEmpty()) {
-        return { x: 0, y: 0, z: 0 };
-    }
-
-    const center = new THREE.Vector3();
-    box.getCenter(center);
+function getOriginOffsetForObject(node) {
+    const bounds = getNodeBounds(node);
+    if (isBoundsEmpty(bounds)) return { x: 0, y: 0, z: 0 };
+    const center = boundsCenter(bounds);
     return {
         x: round(-center.x),
-        y: round(-box.min.y),
+        y: round(-bounds.min.y),
         z: round(-center.z),
     };
 }
 
 function getLayerMaterialColor(entry, meshes) {
-    const mesh = entry.meshIndices
-        .map((meshIndex) => meshes[meshIndex])
-        .find((item) => item?.material?.color);
-    return mesh?.material?.color ? `#${mesh.material.color.getHexString()}` : "#868e96";
+    const mesh = entry.meshIndices.map((meshIndex) => meshes[meshIndex]).find((item) => item?.material?.diffuseColor);
+    return mesh?.material?.diffuseColor ? mesh.material.diffuseColor.toHexString() : "#868e96";
 }
 
 function shouldApplyMaterialColor(objectData) {
@@ -999,47 +887,28 @@ function shouldApplyMaterialColor(objectData) {
     return true;
 }
 
-function applyMaterialColorToObject(object3d, color) {
+function applyMaterialColorToObject(node, color) {
     if (!color) return;
-    object3d.traverse?.((child) => {
-        if (child.isMesh) applyMaterialColor(child, color);
-    });
+    getNodeMeshes(node).forEach((mesh) => applyMaterialColor(mesh, color));
 }
 
 function applyMaterialColor(mesh, color) {
-    if (!color || !mesh.material) return;
-    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    materials.forEach((material, index) => {
-        if (!material?.color) return;
-        if (!material.userData?.sceneCanvasCloned) {
-            const cloned = material.clone();
-            cloned.userData = { ...(material.userData || {}), sceneCanvasCloned: true };
-            if (Array.isArray(mesh.material)) {
-                mesh.material[index] = cloned;
-            } else {
-                mesh.material = cloned;
-            }
+    if (!color || !mesh?.material) return;
+    const materials = mesh.material.subMaterials || [mesh.material];
+    materials.forEach((material) => {
+        if (!material?.diffuseColor) return;
+        if (!material.metadata?.sceneCanvasCloned && material.clone) {
+            const cloned = material.clone(`${material.name || "mat"}_${createId("clone")}`);
+            cloned.metadata = { ...(material.metadata || {}), sceneCanvasCloned: true };
+            mesh.material = cloned;
             material = cloned;
         }
-        material.color.set(color);
+        material.diffuseColor = BABYLON.Color3.FromHexString(color);
     });
-}
-
-async function getCachedGltfModelSource({ key, url }) {
-    if (!key || !url) return null;
-    if (assetSceneCache.has(key)) {
-        return assetSceneCache.get(key);
-    }
-
-    const gltf = await gltfLoader.loadAsync(url);
-    const cached = createCachedGltfModelSource(gltf.scene);
-    assetSceneCache.set(key, cached);
-    return cached;
 }
 
 async function migrateImportedMeshesToLayers(state) {
     let changed = false;
-
     for (const modelObject of state.models.filter(
         (object) => object.type === "importedModel" && (getObjectModelPath(object) || object.assetId),
     )) {
@@ -1047,7 +916,7 @@ async function migrateImportedMeshesToLayers(state) {
         applyModelReferenceToObjectData(modelObject, modelReference, { keepModelPath: true });
         const children = Array.isArray(modelObject.children) ? modelObject.children : [];
         const existingLayerObjects = children.filter((object) => object.type === "importedLayer");
-        const cachedModel = await getCachedGltfForObject(modelObject);
+        const cachedModel = await getCachedModelMetadataForObject(modelObject);
         if (!cachedModel) continue;
         modelReference = getObjectModelReference(modelObject);
         applyModelReferenceToObjectData(modelObject, modelReference, { keepModelPath: true });
@@ -1065,15 +934,12 @@ async function migrateImportedMeshesToLayers(state) {
 
         const legacyMeshes = children.filter((object) => object.type === "importedMesh");
         if (!legacyMeshes.length) continue;
-
-        const layerObjects = [];
-        layerEntries.forEach((entry) => {
+        const layerObjects = layerEntries.map((entry) => {
             const layerObject = createLayerObjectData(entry, modelObject, meshes);
             removeLayerMeshObjects(layerObject);
-            layerObjects.push(layerObject);
+            return layerObject;
         });
         if (!layerObjects.length) continue;
-
         modelObject.children = layerObjects;
         modelObject.source = {
             ...(modelObject.source || {}),
@@ -1083,139 +949,134 @@ async function migrateImportedMeshesToLayers(state) {
         };
         changed = true;
     }
-
     return changed;
 }
 
 function applyCanvasSettings(canvasSettings = {}) {
-    if (!renderer || !scene) return;
-    if (sceneState) {
-        sceneState.canvas = { ...sceneState.canvas, ...canvasSettings };
-    }
+    if (!engine || !scene) return;
+    if (sceneState) sceneState.canvas = { ...sceneState.canvas, ...canvasSettings };
     const color = canvasSettings.backgroundColor || "#f5f7fb";
-    scene.background = new THREE.Color(color);
-    renderer.setClearColor(color);
-
+    scene.clearColor = BABYLON.Color4.FromHexString(`${color}ff`);
     if (gridHelper) {
-        scene.remove(gridHelper);
-        gridHelper.dispose?.();
+        gridHelper.dispose(false, true);
         gridHelper = null;
     }
     if (axesHelper) {
-        scene.remove(axesHelper);
-        axesHelper.dispose?.();
+        axesHelper.dispose(false, true);
         axesHelper = null;
     }
     updateGridToScene(canvasSettings);
     if (canvasSettings.showAxes !== false) {
-        axesHelper = new THREE.AxesHelper(3);
-        scene.add(axesHelper);
+        axesHelper = createAxesHelper(getAxesHelperSize(canvasSettings));
     }
+}
+
+function getAxesHelperSize(canvasSettings = {}) {
+    const value = Number(canvasSettings.axesSize);
+    return Number.isFinite(value) ? clamp(value, 0.1, 1000000) : 3;
 }
 
 function applyLightSettings(lightSettings = defaultLights()) {
     if (!scene) return;
     const lights = normalizeLights(lightSettings);
     if (!ambientLight) {
-        ambientLight = new THREE.HemisphereLight(0xffffff, 0xaab7c4, lights.ambient.intensity);
-        scene.add(ambientLight);
+        ambientLight = new BABYLON.HemisphericLight("ambient", new BABYLON.Vector3(0, 1, 0), scene);
     }
     if (!directionalLight) {
-        directionalLight = new THREE.DirectionalLight(0xffffff, lights.directional.intensity);
-        scene.add(directionalLight);
-        scene.add(directionalLight.target);
+        directionalLight = new BABYLON.DirectionalLight("directional", new BABYLON.Vector3(-1, -2, -1), scene);
     }
-
-    ambientLight.color.set(lights.ambient.color);
-    ambientLight.groundColor.set("#aab7c4");
+    ambientLight.diffuse = BABYLON.Color3.FromHexString(lights.ambient.color);
+    ambientLight.groundColor = BABYLON.Color3.FromHexString("#aab7c4");
     ambientLight.intensity = lights.ambient.intensity;
-    directionalLight.color.set(lights.directional.color);
+    directionalLight.diffuse = BABYLON.Color3.FromHexString(lights.directional.color);
     directionalLight.intensity = lights.directional.intensity;
-    directionalLight.position.set(
-        lights.directional.position.x,
-        lights.directional.position.y,
-        lights.directional.position.z,
-    );
-    directionalLight.target.position.set(0, 0, 0);
-    directionalLight.target.updateMatrixWorld();
-
-    if (sceneState) {
-        sceneState.lights = cloneData(lights);
-    }
+    directionalLight.position = toVector3(lights.directional.position, { x: 4, y: 8, z: 5 });
+    directionalLight.direction = directionalLight.position.scale(-1).normalize();
+    if (sceneState) sceneState.lights = cloneData(lights);
 }
 
 function applyCameraSettings(cameraSettings = defaultCamera()) {
-    if (!camera || !controls) return;
+    if (!camera) return;
     const position = cameraSettings.position || defaultCamera().position;
     const target = cameraSettings.target || defaultCamera().target;
-    camera.position.set(position.x, position.y, position.z);
-    camera.near = cameraSettings.near || camera.near;
-    camera.far = cameraSettings.far || camera.far;
-    camera.updateProjectionMatrix();
-    controls.target.set(target.x, target.y, target.z);
-    controls.update();
+    camera.setTarget(toVector3(target, { x: 0, y: 0, z: 0 }));
+    camera.setPosition(toVector3(position, { x: 5, y: 5, z: 6 }));
+    camera.minZ = cameraSettings.near || camera.minZ || 0.01;
+    camera.maxZ = cameraSettings.far || camera.maxZ || 100000;
+    camera.lowerRadiusLimit = 0.0001;
+    camera.upperRadiusLimit = null;
     updateCameraRangeToScene();
     syncCameraToState();
 }
 
 function syncCameraToState() {
-    if (!sceneState || !camera || !controls) return;
+    if (!sceneState || !camera) return;
     sceneState.camera = {
-        position: {
-            x: round(camera.position.x),
-            y: round(camera.position.y),
-            z: round(camera.position.z),
-        },
-        target: {
-            x: round(controls.target.x),
-            y: round(controls.target.y),
-            z: round(controls.target.z),
-        },
-        near: round(camera.near),
-        far: round(camera.far),
+        position: vectorToData(camera.position),
+        target: vectorToData(camera.target),
+        near: round(camera.minZ),
+        far: round(camera.maxZ),
     };
 }
 
 function getSceneBounds() {
-    const box = new THREE.Box3();
-    contentGroup?.children?.forEach((object) => {
-        if (object.visible !== false) box.expandByObject(object);
+    const bounds = createEmptyBounds();
+    contentRoot?.getChildren().forEach((node) => {
+        if (node.isEnabled?.() !== false) expandBounds(bounds, getNodeBounds(node));
     });
-    return box;
+    return bounds;
 }
 
 function updateGridToScene(canvasSettings = sceneState?.canvas || {}) {
     if (!scene) return;
     if (gridHelper) {
-        scene.remove(gridHelper);
-        gridHelper.dispose?.();
+        gridHelper.dispose(false, true);
         gridHelper = null;
     }
     if (canvasSettings.showGrid === false) return;
-
-    const box = getSceneBounds();
-    const { size, divisions } = getGridMetrics(box);
-    gridHelper = new THREE.GridHelper(size, divisions, 0x9ca3af, 0xd0d7de);
-    gridHelper.position.set(0, 0, 0);
-    scene.add(gridHelper);
+    const { size, divisions } = getGridMetrics(getSceneBounds());
+    gridHelper = createGridHelper(size, divisions);
 }
 
-function getGridMetrics(box) {
-    if (!box || box.isEmpty()) {
-        return {
-            size: 24,
-            divisions: 24,
-        };
+function createGridHelper(size, divisions) {
+    const half = size / 2;
+    const step = size / divisions;
+    const lines = [];
+    for (let i = 0; i <= divisions; i += 1) {
+        const v = -half + i * step;
+        lines.push([new BABYLON.Vector3(-half, 0, v), new BABYLON.Vector3(half, 0, v)]);
+        lines.push([new BABYLON.Vector3(v, 0, -half), new BABYLON.Vector3(v, 0, half)]);
     }
+    const mesh = BABYLON.MeshBuilder.CreateLineSystem("grid", { lines }, scene);
+    mesh.color = BABYLON.Color3.FromHexString("#cbd5e1");
+    mesh.isPickable = false;
+    return mesh;
+}
 
-    const size = new THREE.Vector3();
-    box.getSize(size);
+function createAxesHelper(size) {
+    const root = new BABYLON.TransformNode("axesHelper", scene);
+    const axes = [
+        { name: "x", color: "#ef4444", end: new BABYLON.Vector3(size, 0, 0) },
+        { name: "y", color: "#22c55e", end: new BABYLON.Vector3(0, size, 0) },
+        { name: "z", color: "#3b82f6", end: new BABYLON.Vector3(0, 0, size) },
+    ];
+    axes.forEach((axis) => {
+        const line = BABYLON.MeshBuilder.CreateLines(`axis_${axis.name}`, {
+            points: [BABYLON.Vector3.Zero(), axis.end],
+        }, scene);
+        line.color = BABYLON.Color3.FromHexString(axis.color);
+        line.isPickable = false;
+        line.parent = root;
+    });
+    return root;
+}
+
+function getGridMetrics(bounds) {
+    if (!bounds || isBoundsEmpty(bounds)) return { size: 24, divisions: 24 };
+    const size = boundsSize(bounds);
     const rawSize = Math.max(size.x, size.z, 24) * 1.15;
     const gridSize = getRoundedGridSize(rawSize);
-    return {
-        size: gridSize,
-        divisions: getGridDivisions(gridSize),
-    };
+    return { size: gridSize, divisions: getGridDivisions(gridSize) };
 }
 
 function getRoundedGridSize(value) {
@@ -1229,34 +1090,32 @@ function getGridDivisions(size) {
 }
 
 function getObjectBoundsByIds(ids) {
-    const box = new THREE.Box3();
+    const bounds = createEmptyBounds();
     ids.forEach((id) => {
-        const object3d = objectMap.get(id);
-        if (object3d?.visible !== false) box.expandByObject(object3d);
+        const node = objectMap.get(id);
+        if (node?.isEnabled?.() !== false) expandBounds(bounds, getNodeBounds(node));
     });
-    return box;
+    return bounds;
 }
 
 function updateCameraRangeToScene() {
-    if (!camera || !controls || !contentGroup) return;
-    updateCameraRangeToBox(getSceneBounds());
+    if (!camera || !contentRoot) return;
+    updateCameraRangeToBounds(getSceneBounds());
 }
 
-function updateCameraRangeToBox(box) {
-    if (!camera || !controls || !box || box.isEmpty()) return;
-    const center = new THREE.Vector3();
-    const size = new THREE.Vector3();
-    box.getCenter(center);
-    box.getSize(size);
+function updateCameraRangeToBounds(bounds) {
+    if (!camera || !bounds || isBoundsEmpty(bounds)) return;
+    const center = boundsCenter(bounds);
+    const size = boundsSize(bounds);
     const radius = Math.max(size.length() * 0.5, 1);
-    const distance = Math.max(camera.position.distanceTo(center), radius);
-
-    camera.near = Math.max(radius / 5000, 0.1);
-    camera.far = Math.max(1000, radius * 12, distance + radius * 6);
-    camera.updateProjectionMatrix();
-
-    controls.minDistance = Math.max(radius / 10000, 0.1);
-    controls.maxDistance = Math.max(camera.far * 0.75, radius * 8, 1000);
+    const distance = Math.max(BABYLON.Vector3.Distance(camera.position, center), radius);
+    const cameraRadius = Math.max(camera.radius || BABYLON.Vector3.Distance(camera.position, camera.target), 0.0001);
+    const far = Math.max(1000, distance + radius * 8, cameraRadius + radius * 8);
+    const near = Math.min(Math.max(cameraRadius / 10000, radius / 20000), far / 10000);
+    camera.minZ = clamp(near, 0.0001, 10);
+    camera.maxZ = far;
+    camera.lowerRadiusLimit = 0.0001;
+    camera.upperRadiusLimit = null;
 }
 
 function scheduleCameraRangeUpdate() {
@@ -1268,36 +1127,75 @@ function scheduleCameraRangeUpdate() {
     });
 }
 
-function fitCameraToBox(box) {
-    if (!camera || !controls || !box || box.isEmpty()) return false;
-    const center = new THREE.Vector3();
-    const size = new THREE.Vector3();
-    box.getCenter(center);
-    box.getSize(size);
-
+function fitCameraToBox(bounds) {
+    if (!camera || !bounds || isBoundsEmpty(bounds)) return false;
+    const center = boundsCenter(bounds);
+    const size = boundsSize(bounds);
     const maxDim = Math.max(size.x, size.y, size.z, 1);
-    const fov = THREE.MathUtils.degToRad(camera.fov);
+    const fov = camera.fov || 0.8;
     const distance = (maxDim / (2 * Math.tan(fov / 2))) * 1.35;
-    const direction = new THREE.Vector3(1, 0.85, 1).normalize();
-
-    camera.position.copy(center).add(direction.multiplyScalar(distance));
-    controls.target.copy(center);
-    updateCameraRangeToBox(box);
-    controls.update();
+    const direction = new BABYLON.Vector3(1, 0.85, 1).normalize();
+    camera.setTarget(center);
+    camera.setPosition(center.add(direction.scale(distance)));
+    updateCameraRangeToBounds(bounds);
     syncCameraToState();
     return true;
 }
 
+function createEmptyBounds() {
+    return {
+        min: new BABYLON.Vector3(Infinity, Infinity, Infinity),
+        max: new BABYLON.Vector3(-Infinity, -Infinity, -Infinity),
+    };
+}
+
+function isBoundsEmpty(bounds) {
+    return !bounds || !Number.isFinite(bounds.min.x) || !Number.isFinite(bounds.max.x);
+}
+
+function expandBounds(target, source) {
+    if (isBoundsEmpty(source)) return target;
+    target.min = BABYLON.Vector3.Minimize(target.min, source.min);
+    target.max = BABYLON.Vector3.Maximize(target.max, source.max);
+    return target;
+}
+
+function getNodeBounds(node) {
+    const bounds = createEmptyBounds();
+    getNodeMeshes(node).forEach((mesh) => {
+        if (!mesh.isEnabled() || mesh.metadata?.selectionProxy || mesh.metadata?.selectionHelper) return;
+        try {
+            mesh.computeWorldMatrix(true);
+            const box = mesh.getBoundingInfo().boundingBox;
+            bounds.min = BABYLON.Vector3.Minimize(bounds.min, box.minimumWorld);
+            bounds.max = BABYLON.Vector3.Maximize(bounds.max, box.maximumWorld);
+        } catch {
+            // Some imported helper nodes do not carry geometry.
+        }
+    });
+    return bounds;
+}
+
+function boundsSize(bounds) {
+    return bounds.max.subtract(bounds.min);
+}
+
+function boundsCenter(bounds) {
+    return bounds.min.add(bounds.max).scale(0.5);
+}
+
+function worldToLocal(node, point) {
+    node.computeWorldMatrix(true);
+    const inverted = node.getWorldMatrix().clone().invert();
+    return BABYLON.Vector3.TransformCoordinates(point, inverted);
+}
+
 function round(value) {
-    return Number(value.toFixed(4));
+    return Number((Number(value) || 0).toFixed(4));
 }
 
 function resizeRenderer() {
-    if (!renderer || !camera) return;
-    const { width, height } = getHostSize();
-    camera.aspect = width / height;
-    camera.updateProjectionMatrix();
-    renderer.setSize(width, height);
+    engine?.resize();
 }
 
 function getHostSize() {
@@ -1318,23 +1216,21 @@ function getObjectScreenAnchor(objectId, pointerEvent) {
         width,
         height,
     };
-
-    const object3d = objectId ? objectMap.get(objectId) : null;
-    if (!object3d || !camera) return fallback;
-
-    const box = new THREE.Box3().setFromObject(object3d);
-    const worldPosition = new THREE.Vector3();
-    if (box.isEmpty()) {
-        object3d.getWorldPosition(worldPosition);
-    } else {
-        box.getCenter(worldPosition);
-        worldPosition.y = box.max.y;
-    }
-
-    const projected = worldPosition.project(camera);
+    const node = objectId ? objectMap.get(objectId) : null;
+    if (!node || !camera || !scene) return fallback;
+    const bounds = getNodeBounds(node);
+    const worldPosition = isBoundsEmpty(bounds)
+        ? node.getAbsolutePosition?.() || BABYLON.Vector3.Zero()
+        : new BABYLON.Vector3(boundsCenter(bounds).x, bounds.max.y, boundsCenter(bounds).z);
+    const projected = BABYLON.Vector3.Project(
+        worldPosition,
+        BABYLON.Matrix.IdentityReadOnly,
+        scene.getTransformMatrix(),
+        camera.viewport.toGlobal(width, height),
+    );
     return {
-        x: THREE.MathUtils.clamp((projected.x * 0.5 + 0.5) * width, 0, width),
-        y: THREE.MathUtils.clamp((-projected.y * 0.5 + 0.5) * height, 0, height),
+        x: clamp(projected.x, 0, width),
+        y: clamp(projected.y, 0, height),
         width,
         height,
     };
@@ -1342,18 +1238,7 @@ function getObjectScreenAnchor(objectId, pointerEvent) {
 
 function updateSceneBuiltInDevicePopoverAnchor() {
     if (!sceneBuiltInDevicePopoverAnchorId) return;
-    sceneBuiltInDevicePopoverRef.value?.setAnchor(
-        getObjectScreenAnchor(sceneBuiltInDevicePopoverAnchorId),
-    );
-}
-
-function animate() {
-    updatePreviewAnimations();
-    updateModelExplodeAnimations();
-    controls?.update();
-    updateSceneBuiltInDevicePopoverAnchor();
-    renderer?.render(scene, camera);
-    frameId = requestAnimationFrame(animate);
+    sceneBuiltInDevicePopoverRef.value?.setAnchor(getObjectScreenAnchor(sceneBuiltInDevicePopoverAnchorId));
 }
 
 function resetPreviewAnimationRuntime() {
@@ -1374,26 +1259,20 @@ function updatePreviewAnimations() {
 function applyPreviewAnimation(ownerData, animation, elapsed) {
     const duration = getAnimationDuration(animation);
     if (!duration) return;
-    const targetId =
-        animation.targetId && animation.targetId !== "self" ? animation.targetId : ownerData.id;
+    const targetId = animation.targetId && animation.targetId !== "self" ? animation.targetId : ownerData.id;
     const targetData = getObjectData(targetId);
-    const object3d = objectMap.get(targetId);
-    if (!targetData || !object3d) return;
-
+    const node = objectMap.get(targetId);
+    if (!targetData || !node) return;
     const localTime = getAnimationLocalTime(animation, elapsed, duration);
-    const propertyPaths = getAnimationPropertyPaths(animation);
-    propertyPaths.forEach((propertyPath) => {
+    getAnimationPropertyPaths(animation).forEach((propertyPath) => {
         const value = getAnimationPropertyValue(animation, propertyPath, localTime);
         if (value === null) return;
-        applyAnimationPropertyValue(targetData, object3d, propertyPath, value);
+        applyAnimationPropertyValue(targetData, node, propertyPath, value);
     });
 }
 
 function getAnimationDuration(animation) {
-    const duration = Math.max(
-        0,
-        ...(animation?.segments || []).map((segment) => Number(segment?.endTime) || 0),
-    );
+    const duration = Math.max(0, ...(animation?.segments || []).map((segment) => Number(segment?.endTime) || 0));
     return Number.isFinite(duration) ? duration : 0;
 }
 
@@ -1403,7 +1282,6 @@ function getAnimationLocalTime(animation, elapsed, duration) {
     const loopCount = Math.max(Number(animation?.loopCount) || 0, 0);
     const cycleIndex = Math.floor(scaledElapsed / duration);
     const finished = loopCount > 0 && cycleIndex >= loopCount;
-
     if (finished) {
         if (animation?.endState === "keep") {
             const lastCycleIndex = Math.max(loopCount - 1, 0);
@@ -1411,11 +1289,8 @@ function getAnimationLocalTime(animation, elapsed, duration) {
         }
         return 0;
     }
-
     let localTime = scaledElapsed % duration;
-    if (animation?.loopMode === "alternate" && cycleIndex % 2 === 1) {
-        localTime = duration - localTime;
-    }
+    if (animation?.loopMode === "alternate" && cycleIndex % 2 === 1) localTime = duration - localTime;
     return localTime;
 }
 
@@ -1445,68 +1320,67 @@ function getAnimationPropertyValue(animation, propertyPath, localTime) {
     });
     tracks.sort((left, right) => left.startTime - right.startTime);
     if (!tracks.length) return null;
-
     for (const track of tracks) {
         if (localTime < track.startTime) return track.startValue;
         if (localTime <= track.endTime) {
             const duration = Math.max(track.endTime - track.startTime, 0.0001);
-            const progress = THREE.MathUtils.clamp((localTime - track.startTime) / duration, 0, 1);
-            return THREE.MathUtils.lerp(track.startValue, track.endValue, progress);
+            const progress = clamp((localTime - track.startTime) / duration, 0, 1);
+            return lerp(track.startValue, track.endValue, progress);
         }
     }
-
     return tracks[tracks.length - 1].endValue;
 }
 
-function applyAnimationPropertyValue(targetData, object3d, propertyPath, value) {
+function applyAnimationPropertyValue(targetData, node, propertyPath, value) {
     if (!Number.isFinite(value)) return;
     const [field, axis] = String(propertyPath || "").split(".");
-    if (!["position", "rotation", "scale"].includes(field) || !["x", "y", "z"].includes(axis)) {
-        return;
-    }
+    if (!["position", "rotation", "scale"].includes(field) || !["x", "y", "z"].includes(axis)) return;
     targetData[field] = {
         ...(targetData[field] || {}),
         [axis]: field === "scale" ? Math.max(value, 0.001) : value,
     };
-    object3d[field][axis] = targetData[field][axis];
+    const targetField = field === "scale" ? "scaling" : field;
+    node[targetField][axis] = targetData[field][axis];
 }
 
-function setPointer(event) {
-    const rect = renderer.domElement.getBoundingClientRect();
-    pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+function getCanvasPoint(event) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+    };
+}
+
+function getPickingRay(event) {
+    const point = getCanvasPoint(event);
+    return scene.createPickingRay(point.x, point.y, BABYLON.Matrix.Identity(), camera);
 }
 
 function getHit(event) {
-    setPointer(event);
-    raycaster.setFromCamera(pointer, camera);
-    const objects = getSelectableObjects();
-    const hits = raycaster.intersectObjects(objects, true);
-    for (const hit of hits) {
-        let target = hit.object;
-        while (target && !target.userData.sceneObjectId) {
-            target = target.parent;
-        }
-        if (!target) continue;
-        const objectData = getObjectData(target.userData.sceneObjectId);
-        const selectionId = resolveCanvasSelectionId(target.userData.sceneObjectId);
-        if (!objectData || !selectionId || objectData.visible === false || target.visible === false)
-            continue;
-        const selectionObject = objectMap.get(selectionId);
-        if (!selectionObject) continue;
-        return {
-            id: selectionId,
-            object: selectionObject,
-            point: hit.point,
-        };
-    }
-    return null;
+    if (!scene || !camera) return null;
+    const point = getCanvasPoint(event);
+    const pick = scene.pick(point.x, point.y, (mesh) => {
+        if (!mesh?.isPickable || !mesh.isEnabled() || mesh.metadata?.selectionHelper) return false;
+        return Boolean(mesh.metadata?.sceneObjectId);
+    });
+    if (!pick?.hit || !pick.pickedMesh) return null;
+    let target = pick.pickedMesh;
+    while (target && !target.metadata?.sceneObjectId) target = target.parent;
+    if (!target) return null;
+    const selectionId = resolveCanvasSelectionId(target.metadata.sceneObjectId);
+    const objectData = getObjectData(selectionId);
+    const selectionObject = objectMap.get(selectionId);
+    if (!objectData || !selectionObject || objectData.visible === false) return null;
+    return {
+        id: selectionId,
+        object: selectionObject,
+        point: pick.pickedPoint || BABYLON.Vector3.Zero(),
+    };
 }
 
 function resolveCanvasSelectionId(id) {
     let objectData = getObjectData(id);
     if (!objectData) return null;
-
     if (["importedLayer", "importedMesh"].includes(objectData.type)) {
         const visited = new Set();
         while (objectData?.parentId && !visited.has(objectData.id)) {
@@ -1517,65 +1391,182 @@ function resolveCanvasSelectionId(id) {
             objectData = parent;
         }
     }
-
     return objectData.type === "importedMesh" ? null : objectData.id;
 }
 
-function getSelectableObjects() {
-    return Array.from(objectMap.entries())
-        .filter(([id, object]) => {
-            const objectData = getObjectData(id);
-            if (!objectData || objectData.visible === false) return false;
-            if (["importedLayer", "importedMesh"].includes(objectData.type)) return false;
-            return object.visible !== false;
-        })
-        .map(([id, object]) => selectionRaycastMap.get(id) || object);
+function isGizmoPointerActive(event = null) {
+    return Boolean(
+        gizmoManager?.isDragging ||
+            gizmoManager?.isHovered ||
+            transformDragging ||
+            (event && isGizmoPointerHit(event)),
+    );
 }
 
-function isTransformControlsPointerActive() {
-    return Boolean(transformControls?.object && (transformControls.axis || transformControls.dragging));
+function isGizmoPointerHit(event) {
+    return Boolean(getGizmoAxisHit(event));
+}
+
+function getGizmoAxisHit(event) {
+    if (!event || props.mode !== "edit" || !gizmoManager?.attachedNode) return null;
+    const utilityLayer = gizmoManager.utilityLayer;
+    const utilityScene = utilityLayer?.utilityLayerScene;
+    if (!utilityScene || !canvas) return null;
+    const point = getCanvasPoint(event);
+    const previousActiveCamera = utilityScene.activeCamera;
+    if (!utilityScene.activeCamera) {
+        utilityScene.activeCamera = utilityLayer.getRenderCamera?.() || camera;
+    }
+    const pick = utilityScene.pick(point.x, point.y);
+    if (!previousActiveCamera) utilityScene.activeCamera = previousActiveCamera;
+    if (pick?.hit && pick.pickedMesh) {
+        const meshHit = getGizmoAxisHitFromMesh(pick.pickedMesh);
+        if (meshHit?.axis) return meshHit;
+    }
+    return getGizmoScreenAxisHit(event);
+}
+
+function getGizmoAxisHitFromMesh(mesh) {
+    const mode = getActiveTransformMode();
+    const gizmo = getActiveModeGizmo(mode);
+    if (!gizmo) return null;
+    const axisEntries = [
+        { axis: "x", gizmo: gizmo.xGizmo },
+        { axis: "y", gizmo: gizmo.yGizmo },
+        { axis: "z", gizmo: gizmo.zGizmo },
+    ];
+    for (const entry of axisEntries) {
+        if (isMeshInGizmoAxis(mesh, entry.gizmo)) return { mode, axis: entry.axis, mesh };
+    }
+    return isGizmoAxisMesh(mesh) ? { mode, axis: "", mesh } : null;
+}
+
+function getActiveTransformMode() {
+    const mode = sceneState?.editorState?.transformMode || "translate";
+    return ["translate", "rotate", "scale"].includes(mode) ? mode : "translate";
+}
+
+function getActiveModeGizmo(mode = getActiveTransformMode()) {
+    if (mode === "rotate") return gizmoManager?.gizmos.rotationGizmo || null;
+    if (mode === "scale") return gizmoManager?.gizmos.scaleGizmo || null;
+    return gizmoManager?.gizmos.positionGizmo || null;
+}
+
+function getGizmoScreenAxisHit(event) {
+    const mode = getActiveTransformMode();
+    if (!["translate", "scale"].includes(mode)) return null;
+    const node = gizmoManager?.attachedNode;
+    if (!node) return null;
+    const origin = node.getAbsolutePosition?.() || node.position;
+    const originScreen = projectWorldToCanvas(origin);
+    const pointer = getCanvasPoint(event);
+    const handleLength = mode === "scale" ? 86 : 94;
+    const threshold = mode === "scale" ? 24 : 18;
+    let bestHit = null;
+    for (const axis of ["x", "y", "z"]) {
+        const axisScreen = getAxisScreenDirection(origin, getTransformAxisWorld(node, axis));
+        const endScreen = {
+            x: originScreen.x + axisScreen.x * handleLength,
+            y: originScreen.y + axisScreen.y * handleLength,
+        };
+        const distance = Math.min(
+            getPointDistance(pointer, endScreen),
+            getPointToSegmentDistance(pointer, originScreen, endScreen),
+        );
+        if (distance <= threshold && (!bestHit || distance < bestHit.distance)) {
+            bestHit = { mode, axis, mesh: null, distance };
+        }
+    }
+    return bestHit ? { mode: bestHit.mode, axis: bestHit.axis, mesh: null } : null;
+}
+
+function isMeshInGizmoAxis(mesh, axisGizmo) {
+    if (!mesh || !axisGizmo) return false;
+    let current = mesh;
+    while (current) {
+        if (current === axisGizmo._rootMesh || current === axisGizmo._gizmoMesh) return true;
+        current = current.parent;
+    }
+    const meshes = [
+        ...(axisGizmo._rootMesh?.getChildMeshes?.(false) || []),
+        ...(axisGizmo._gizmoMesh?.getChildMeshes?.(false) || []),
+    ];
+    return meshes.includes(mesh);
+}
+
+function isGizmoAxisMesh(mesh) {
+    const axisCache = gizmoManager?._gizmoAxisCache;
+    if (!mesh || !axisCache) return false;
+    let current = mesh;
+    while (current) {
+        if (axisCache.has(current)) return true;
+        current = current.parent;
+    }
+    for (const cache of axisCache.values()) {
+        if (cache.colliderMeshes?.includes(mesh)) return true;
+    }
+    return false;
 }
 
 function handlePointerDown(event) {
-    if (event.button !== 0 || !sceneState) return;
+    if (!sceneState || ![0, 2].includes(event.button)) return;
     focusCanvasHost();
+    if (event.button === 2) {
+        event.preventDefault();
+        event.stopPropagation?.();
+        beginCameraDragCandidate(event, "pan");
+        return;
+    }
     if (props.mode === "view") {
+        beginCameraDragCandidate(event, "rotate");
         const hit = getHit(event);
-        if (hit) {
-            floatingDevicePopoverOpenedDuringClickEvent = false;
-            const actions = runObjectEvents(hit.id, "leftClick", { pointerEvent: event, hit });
-            const shouldKeepFloatingDevicePopover =
-                actions.includes("devicePopover") || floatingDevicePopoverOpenedDuringClickEvent;
-            floatingDevicePopoverOpenedDuringClickEvent = false;
-            if (!shouldKeepFloatingDevicePopover) hideFloatingDevicePopover();
-        } else {
-            hideFloatingDevicePopover();
-        }
+        pendingViewClick = {
+            hit,
+            startX: event.clientX,
+            startY: event.clientY,
+        };
         return;
     }
     if (props.mode !== "edit") return;
-    if (isTransformControlsPointerActive()) return;
-
+    const axisHit = getGizmoAxisHit(event);
+    if (axisHit?.axis && beginAxisTransform(event, axisHit)) return;
+    if (isGizmoPointerActive(event)) return;
+    beginCameraDragCandidate(event, "rotate");
     const hit = getHit(event);
+    pendingEditPointer = {
+        hit,
+        startX: event.clientX,
+        startY: event.clientY,
+        selectedIds: [...(sceneState.editorState?.selectedIds || props.selectedIds || [])],
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+    };
+    if (!hit) return;
+}
+
+function finishPendingEditClick(event) {
+    const pending = pendingEditPointer;
+    pendingEditPointer = null;
+    if (!pending) return;
+    const distance = getPointerDistance(event, pending);
+    if (distance > 6) return;
+    const hit = pending.hit;
     if (!hit) {
-        if (!event.ctrlKey) applySelection([], true);
+        if (!pending.ctrlKey) applySelection([], true);
         return;
     }
+    applyEditSelectionFromHit(hit, pending);
+}
 
+function applyEditSelectionFromHit(hit, pending) {
     const currentSelectedIds = sceneState.editorState?.selectedIds || props.selectedIds || [];
     const hitIsSelected = currentSelectedIds.includes(hit.id);
-    const nextIds = event.ctrlKey
+    const nextIds = pending.ctrlKey
         ? toggleId(currentSelectedIds, hit.id)
         : hitIsSelected && currentSelectedIds.length > 1
           ? currentSelectedIds
           : [hit.id];
     applySelection(nextIds, true);
-
-    if (event.ctrlKey || event.metaKey || nextIds.length <= 1 || !nextIds.includes(hit.id)) return;
-
-    const objectData = getObjectData(hit.id);
-    if (!objectData || objectData.locked) return;
-    beginDirectDrag(event, nextIds);
 }
 
 function handleDoubleClick(event) {
@@ -1593,20 +1584,16 @@ function focusCanvasHost() {
 function runObjectEvents(objectId, triggerType, payload = {}) {
     const objectData = getObjectData(objectId);
     if (!objectData?.events?.length) return [];
-    const eventItems = objectData.events.filter((eventItem) =>
-        isExecutableObjectEvent(eventItem, triggerType, payload),
-    );
+    const eventItems = objectData.events.filter((eventItem) => isExecutableObjectEvent(eventItem, triggerType));
     eventItems.forEach((eventItem) => runObjectEventAction(objectData, eventItem, payload));
     return eventItems.map((eventItem) => eventItem.actionType);
 }
 
-function isExecutableObjectEvent(eventItem, triggerType, payload = {}) {
+function isExecutableObjectEvent(eventItem, triggerType) {
     if (eventItem?.triggerType !== triggerType) return false;
     if (eventItem.actionType === "customFunction") return Boolean(String(eventItem.code || "").trim());
     if (eventItem.actionType === "devicePopover") return triggerType === "leftClick";
-    if (eventItem.actionType === "modelExplode") {
-        return ["leftClick", "leftDoubleClick"].includes(triggerType);
-    }
+    if (eventItem.actionType === "modelExplode") return ["leftClick", "leftDoubleClick"].includes(triggerType);
     return false;
 }
 
@@ -1642,7 +1629,7 @@ function runCustomObjectEvent(objectData, eventItem, payload = {}) {
             "scene",
             "camera",
             "controls",
-            "THREE",
+            "BABYLON",
             "het3d",
             eventItem.code,
         );
@@ -1654,7 +1641,7 @@ function runCustomObjectEvent(objectData, eventItem, payload = {}) {
             scene,
             camera,
             controls,
-            THREE,
+            BABYLON,
             het3d: canvasHet3dApi,
         };
         handler(
@@ -1665,12 +1652,12 @@ function runCustomObjectEvent(objectData, eventItem, payload = {}) {
             context.scene,
             context.camera,
             context.controls,
-            context.THREE,
+            context.BABYLON,
             context.het3d,
         );
     } catch (error) {
-        console.error("对象事件执行失败", error);
-        notifyMessage("error", `对象事件执行失败：${error.message}`, error);
+        console.error("Object event execution failed", error);
+        notifyMessage("error", `Object event execution failed: ${error.message}`, error);
     } finally {
         objectEventTriggerStack.pop();
     }
@@ -1678,12 +1665,8 @@ function runCustomObjectEvent(objectData, eventItem, payload = {}) {
 
 function showPublicDevicePopover(options = {}) {
     if (!sceneState) return false;
-
     const normalizedOptions = normalizePublicDevicePopoverOptions(options);
-    if (
-        normalizedOptions.popoverMode !== "builtIn" &&
-        isObjectEventTriggerRunning("leftClick")
-    ) {
+    if (normalizedOptions.popoverMode !== "builtIn" && isObjectEventTriggerRunning("leftClick")) {
         floatingDevicePopoverOpenedDuringClickEvent = true;
     }
     const objectData = resolvePublicDevicePopoverObject(normalizedOptions);
@@ -1707,19 +1690,10 @@ function showPublicDevicePopover(options = {}) {
 function explodeModel(options = {}) {
     if (!sceneState || props.mode !== "view") return false;
     const source = isPlainRecord(options) ? options : {};
-    const objectId = String(
-        source.objectId ||
-            source.targetId ||
-            source.id ||
-            source.object?.id ||
-            source.objectData?.id ||
-            "",
-    ).trim();
+    const objectId = String(source.objectId || source.targetId || source.id || source.object?.id || source.objectData?.id || "").trim();
     const objectData = objectId ? getObjectData(objectId) : null;
     const eventItem = resolveModelExplodeEvent(objectData, source);
-    const explodeConfig = normalizeModelExplodeConfig(
-        source.explodeConfig || eventItem?.explodeConfig || {},
-    );
+    const explodeConfig = normalizeModelExplodeConfig(source.explodeConfig || eventItem?.explodeConfig || {});
     const payload = {
         sceneId: sceneState.id,
         eventId: String(source.eventId || eventItem?.id || "").trim(),
@@ -1735,9 +1709,7 @@ function explodeModel(options = {}) {
 }
 
 function resolveModelExplodeEvent(objectData, source) {
-    if (isPlainRecord(source.event) && source.event.actionType === "modelExplode") {
-        return source.event;
-    }
+    if (isPlainRecord(source.event) && source.event.actionType === "modelExplode") return source.event;
     const events = Array.isArray(objectData?.events) ? objectData.events : [];
     const eventId = String(source.eventId || "").trim();
     if (eventId) {
@@ -1752,9 +1724,7 @@ function normalizeModelExplodeConfig(config = {}) {
     return {
         targets: Array.isArray(source.targets) ? source.targets : [],
         targetIds: source.targetIds || source.objectIds || source.ids || "",
-        direction: ["up", "down", "both", "custom"].includes(source.direction)
-            ? source.direction
-            : "up",
+        direction: ["up", "down", "both", "custom"].includes(source.direction) ? source.direction : "up",
         spacing: Math.max(Number(source.spacing) || 0, 0),
         duration: Math.max(Number(source.duration) || 800, 0),
         easing: source.easing || "linear",
@@ -1767,35 +1737,24 @@ function runModelExplode(payload = {}) {
     const triggerObject = payload.objectId ? getObjectData(payload.objectId) : null;
     const targets = resolveModelExplodeTargets(payload.explodeConfig, triggerObject);
     if (!targets.length) return false;
-
     const now = performance.now();
     const duration = Math.max(Number(payload.explodeConfig?.duration) || 800, 0);
     const eventKey = payload.eventId || payload.objectId || "manual";
     let started = false;
-
     targets.forEach((target, index) => {
         const targetId = String(target.objectId || target.id || "").trim();
         const targetData = targetId ? getObjectData(targetId) : null;
-        const object3d = targetId ? objectMap.get(targetId) : null;
-        if (!targetData || !object3d) return;
-
+        const node = targetId ? objectMap.get(targetId) : null;
+        if (!targetData || !node) return;
         const stateKey = `${eventKey}:${targetId}`;
         const existingState = modelExplodeStates.get(stateKey);
         const existingAnimation = activeModelExplodeAnimations.get(stateKey);
-        const fromPosition =
-            existingState?.fromPosition ||
-            normalizeModelExplodeVector(target.fromPosition, targetData.position);
+        const fromPosition = existingState?.fromPosition || normalizeModelExplodeVector(target.fromPosition, targetData.position);
         const toPosition =
             existingState?.toPosition ||
             normalizeModelExplodeVector(
                 target.toPosition,
-                getAutoModelExplodeTargetPosition(
-                    targetData,
-                    payload.explodeConfig,
-                    index,
-                    targets.length,
-                    fromPosition,
-                ),
+                getAutoModelExplodeTargetPosition(targetData, payload.explodeConfig, index, targets.length, fromPosition),
             );
         const targetExpanded = payload.explodeConfig?.toggle
             ? existingAnimation
@@ -1803,8 +1762,7 @@ function runModelExplode(payload = {}) {
                 : !existingState?.expanded
             : true;
         const destination = targetExpanded ? toPosition : fromPosition;
-        const startPosition = vectorFromObject3DPosition(object3d.position);
-
+        const startPosition = vectorFromObject3DPosition(node.position);
         modelExplodeStates.set(stateKey, {
             fromPosition,
             toPosition,
@@ -1814,7 +1772,7 @@ function runModelExplode(payload = {}) {
             stateKey,
             targetId,
             targetData,
-            object3d,
+            node,
             parentImportedModelId: getModelExplodeParentImportedModelId(targetData),
             startPosition,
             endPosition: destination,
@@ -1824,10 +1782,7 @@ function runModelExplode(payload = {}) {
         });
         started = true;
     });
-
-    if (started) {
-        emitCanvasEvent("modelExplode", cloneData(payload));
-    }
+    if (started) emitCanvasEvent("modelExplode", cloneData(sanitizeEventPayload(payload)));
     return started;
 }
 
@@ -1860,31 +1815,20 @@ function expandModelExplodeTarget(target) {
 }
 
 function getModelExplodeLayerTargets(objectData) {
-    const children = Array.isArray(objectData?.children) ? objectData.children : [];
-    const layers = children.filter((child) => child?.type === "importedLayer");
-    if (layers.length) {
-        return layers.slice().sort(compareModelExplodeLayers);
-    }
-    return [];
+    const layers = (objectData?.children || []).filter((child) => child?.type === "importedLayer");
+    return layers.length ? layers.slice().sort(compareModelExplodeLayers) : [];
 }
 
 function compareModelExplodeLayers(left, right) {
     const leftIndex = Number(left?.source?.layerIndex);
     const rightIndex = Number(right?.source?.layerIndex);
-    if (Number.isFinite(leftIndex) && Number.isFinite(rightIndex)) {
-        return leftIndex - rightIndex;
-    }
+    if (Number.isFinite(leftIndex) && Number.isFinite(rightIndex)) return leftIndex - rightIndex;
     return String(left?.name || "").localeCompare(String(right?.name || ""), "zh-Hans-CN");
 }
 
 function parseModelExplodeTargetIds(value) {
-    if (Array.isArray(value)) {
-        return value.map((id) => String(id || "").trim()).filter(Boolean);
-    }
-    return String(value || "")
-        .split(",")
-        .map((id) => id.trim())
-        .filter(Boolean);
+    if (Array.isArray(value)) return value.map((id) => String(id || "").trim()).filter(Boolean);
+    return String(value || "").split(",").map((id) => id.trim()).filter(Boolean);
 }
 
 function getAutoModelExplodeTargetPosition(targetData, config, index, count, fromPosition) {
@@ -1912,11 +1856,11 @@ function getAutoModelExplodeTargetPosition(targetData, config, index, count, fro
 }
 
 function getModelExplodeDefaultSpacing(targetData) {
-    const object3d = targetData?.id ? objectMap.get(targetData.id) : null;
-    if (!object3d) return 2;
-    const box = new THREE.Box3().setFromObject(object3d);
-    if (box.isEmpty()) return 2;
-    const size = box.getSize(new THREE.Vector3());
+    const node = targetData?.id ? objectMap.get(targetData.id) : null;
+    if (!node) return 2;
+    const bounds = getNodeBounds(node);
+    if (isBoundsEmpty(bounds)) return 2;
+    const size = boundsSize(bounds);
     return Math.max(size.y || 0, size.x || 0, size.z || 0, 1);
 }
 
@@ -1943,31 +1887,26 @@ function updateModelExplodeAnimations() {
     const completedImportedModelIds = new Set();
     let hasCompletedAnimation = false;
     activeModelExplodeAnimations.forEach((animation, stateKey) => {
-        const object3d = animation.object3d || objectMap.get(animation.targetId);
+        const node = animation.node || objectMap.get(animation.targetId);
         const targetData = animation.targetData || getObjectData(animation.targetId);
-        if (!object3d || !targetData) {
+        if (!node || !targetData) {
             activeModelExplodeAnimations.delete(stateKey);
             return;
         }
-        const progress =
-            animation.duration <= 0
-                ? 1
-                : THREE.MathUtils.clamp((now - animation.startedAt) / animation.duration, 0, 1);
+        const progress = animation.duration <= 0 ? 1 : clamp((now - animation.startedAt) / animation.duration, 0, 1);
         const nextPosition = {
-            x: THREE.MathUtils.lerp(animation.startPosition.x, animation.endPosition.x, progress),
-            y: THREE.MathUtils.lerp(animation.startPosition.y, animation.endPosition.y, progress),
-            z: THREE.MathUtils.lerp(animation.startPosition.z, animation.endPosition.z, progress),
+            x: lerp(animation.startPosition.x, animation.endPosition.x, progress),
+            y: lerp(animation.startPosition.y, animation.endPosition.y, progress),
+            z: lerp(animation.startPosition.z, animation.endPosition.z, progress),
         };
-        applyModelExplodePosition(targetData, object3d, nextPosition, progress >= 1);
+        applyModelExplodePosition(targetData, node, nextPosition, progress >= 1);
         if (progress >= 1) {
             const state = modelExplodeStates.get(stateKey);
             if (state) {
                 state.expanded = animation.targetExpanded;
                 modelExplodeStates.set(stateKey, state);
             }
-            if (animation.parentImportedModelId) {
-                completedImportedModelIds.add(animation.parentImportedModelId);
-            }
+            if (animation.parentImportedModelId) completedImportedModelIds.add(animation.parentImportedModelId);
             activeModelExplodeAnimations.delete(stateKey);
             hasCompletedAnimation = true;
         }
@@ -1976,9 +1915,7 @@ function updateModelExplodeAnimations() {
         completedImportedModelIds.forEach(refreshImportedModelSelectionProxy);
         updateSelectionHelpers();
     }
-    if (hasCompletedAnimation) {
-        emitSceneChange();
-    }
+    if (hasCompletedAnimation) emitSceneChange();
 }
 
 function getModelExplodeParentImportedModelId(targetData) {
@@ -1987,78 +1924,41 @@ function getModelExplodeParentImportedModelId(targetData) {
     return parentData?.type === "importedModel" ? parentData.id : "";
 }
 
-function applyModelExplodePosition(targetData, object3d, position, shouldSyncData = false) {
-    object3d.position.set(position.x, position.y, position.z);
+function applyModelExplodePosition(targetData, node, position, shouldSyncData = false) {
+    node.position = toVector3(position, { x: 0, y: 0, z: 0 });
     if (shouldSyncData) {
-        targetData.position = {
-            ...(targetData.position || {}),
-            x: round(position.x),
-            y: round(position.y),
-            z: round(position.z),
-        };
-        object3d.position.set(targetData.position.x, targetData.position.y, targetData.position.z);
+        targetData.position = vectorToData(node.position);
+        node.position = toVector3(targetData.position, { x: 0, y: 0, z: 0 });
     }
-    if (object3d.matrixAutoUpdate === false) {
-        object3d.updateMatrix();
-    }
-    object3d.matrixWorldNeedsUpdate = true;
 }
 
 function refreshImportedModelSelectionProxy(modelId) {
     const modelData = getObjectData(modelId);
     const modelRoot = objectMap.get(modelId);
-    const proxy = selectionRaycastMap.get(modelId);
+    const proxy = selectionPickMap.get(modelId);
     if (!modelData || modelData.type !== "importedModel" || !modelRoot || !proxy) return;
-
-    modelRoot.updateMatrixWorld(true);
-    const box = new THREE.Box3();
-    modelRoot.children.forEach((child) => {
-        if (child === proxy || child.userData?.selectionProxy) return;
-        const childBox = new THREE.Box3().setFromObject(child);
-        if (!childBox.isEmpty()) {
-            box.union(childBox);
-        }
+    const bounds = createEmptyBounds();
+    modelRoot.getChildren().forEach((child) => {
+        if (child === proxy || child.metadata?.selectionProxy) return;
+        expandBounds(bounds, getNodeBounds(child));
     });
-    if (box.isEmpty()) return;
-
-    const worldSize = box.getSize(new THREE.Vector3());
-    const worldCenter = box.getCenter(new THREE.Vector3());
-    const worldScale = modelRoot.getWorldScale(new THREE.Vector3());
-    const localSize = new THREE.Vector3(
-        worldSize.x / Math.max(Math.abs(worldScale.x), 0.0001),
-        worldSize.y / Math.max(Math.abs(worldScale.y), 0.0001),
-        worldSize.z / Math.max(Math.abs(worldScale.z), 0.0001),
-    );
-    proxy.geometry?.dispose?.();
-    proxy.geometry = new THREE.BoxGeometry(
-        Math.max(localSize.x, 0.001),
-        Math.max(localSize.y, 0.001),
-        Math.max(localSize.z, 0.001),
-    );
-    proxy.position.copy(modelRoot.worldToLocal(worldCenter));
-    proxy.updateMatrixWorld(true);
+    if (isBoundsEmpty(bounds)) return;
+    const size = boundsSize(bounds);
+    const center = boundsCenter(bounds);
+    proxy.scaling = new BABYLON.Vector3(Math.max(size.x, 0.001), Math.max(size.y, 0.001), Math.max(size.z, 0.001));
+    proxy.position = worldToLocal(modelRoot, center);
 }
 
 function normalizePublicDevicePopoverOptions(options = {}) {
     const source = isPlainRecord(options) ? options : { deviceNo: options };
     const params = source.params;
     const paramsDeviceNo = getPublicDevicePopoverParamsDeviceNo(params);
-    const objectId = String(
-        source.objectId ||
-            source.targetId ||
-            source.id ||
-            source.objectData?.id ||
-            source.object?.id ||
-            "",
-    ).trim();
-
+    const objectId = String(source.objectId || source.targetId || source.id || source.objectData?.id || source.object?.id || "").trim();
     return {
         objectId,
         objectData: isPlainRecord(source.objectData) ? source.objectData : null,
         object: isPlainRecord(source.object) ? source.object : null,
-        objectName: String(
-            source.objectName || source.name || source.objectData?.name || source.object?.name || "",
-        ),
+        objectName: String(source.objectName || source.name || source.objectData?.name || source.object?.name || ""),
         deviceNo: String(source.deviceNo || paramsDeviceNo || "").trim(),
         params,
         popoverMode: source.popoverMode === "builtIn" ? "builtIn" : "floating",
@@ -2090,10 +1990,7 @@ function resolvePublicDevicePopoverObject(options) {
         const objectData = getObjectData(options.objectId);
         if (objectData) return objectData;
     }
-    return {
-        id: options.objectId,
-        name: options.objectName,
-    };
+    return { id: options.objectId, name: options.objectName };
 }
 
 function isPlainRecord(value) {
@@ -2105,9 +2002,7 @@ function getCanvasEventBus() {
 }
 
 function onCanvasEvent(type, handler) {
-    if (type === "modelExplode" && typeof handler !== "function") {
-        return explodeModel(handler);
-    }
+    if (type === "modelExplode" && typeof handler !== "function") return explodeModel(handler);
     return getCanvasEventBus()?.on?.(type, handler) || (() => {});
 }
 
@@ -2127,7 +2022,7 @@ function showDevicePopover(objectData, eventItem, payload = {}) {
     emit("device-popover", {
         object: cloneData(objectData || null),
         event: cloneData(eventItem || null),
-        payload,
+        payload: sanitizeEventPayload(payload),
         mode: eventItem?.popoverMode === "builtIn" ? "builtIn" : "floating",
     });
     if (!resolvedDevicePopoverComponent.value) return;
@@ -2142,33 +2037,49 @@ function showDevicePopover(objectData, eventItem, payload = {}) {
     }
     devicePopoverRef.value?.show(objectData, eventItem, {
         ...payload,
-        pointerEvent:
-            payload.pointerEvent ||
-            getFloatingDevicePopoverPointerEvent(objectData?.id, payload.anchor),
+        pointerEvent: payload.pointerEvent || getFloatingDevicePopoverPointerEvent(objectData?.id, payload.anchor),
     });
+}
+
+function sanitizeEventPayload(payload = {}) {
+    if (!isPlainRecord(payload)) return payload;
+    return {
+        ...payload,
+        pointerEvent: sanitizePointerEvent(payload.pointerEvent),
+        hit: sanitizeHit(payload.hit),
+    };
+}
+
+function sanitizePointerEvent(event) {
+    if (!event) return null;
+    return {
+        clientX: Number(event.clientX) || 0,
+        clientY: Number(event.clientY) || 0,
+        button: Number(event.button) || 0,
+        ctrlKey: Boolean(event.ctrlKey),
+        metaKey: Boolean(event.metaKey),
+        shiftKey: Boolean(event.shiftKey),
+        altKey: Boolean(event.altKey),
+    };
+}
+
+function sanitizeHit(hit) {
+    if (!hit) return null;
+    return {
+        id: hit.id || "",
+        point: hit.point ? vectorToData(hit.point) : null,
+    };
 }
 
 function getFloatingDevicePopoverPointerEvent(objectId, anchor) {
     if (Number.isFinite(anchor?.clientX) && Number.isFinite(anchor?.clientY)) {
-        return {
-            clientX: anchor.clientX,
-            clientY: anchor.clientY,
-        };
+        return { clientX: anchor.clientX, clientY: anchor.clientY };
     }
-
     const rect = hostRef.value?.getBoundingClientRect();
     if (!rect) return null;
-
-    const point =
-        Number.isFinite(anchor?.x) && Number.isFinite(anchor?.y)
-            ? anchor
-            : getObjectScreenAnchor(objectId);
+    const point = Number.isFinite(anchor?.x) && Number.isFinite(anchor?.y) ? anchor : getObjectScreenAnchor(objectId);
     if (!point) return null;
-
-    return {
-        clientX: rect.left + point.x,
-        clientY: rect.top + point.y,
-    };
+    return { clientX: rect.left + point.x, clientY: rect.top + point.y };
 }
 
 function hideFloatingDevicePopover() {
@@ -2190,9 +2101,7 @@ function handleSceneBuiltInDevicePopoverClose() {
 }
 
 function getCanvasHet3dSetValueOptions() {
-    return {
-        syncBindingValues: !isObjectEventTriggerRunning("valueChange"),
-    };
+    return { syncBindingValues: !isObjectEventTriggerRunning("valueChange") };
 }
 
 function isObjectEventTriggerRunning(triggerType) {
@@ -2225,7 +2134,6 @@ function restartCanvasHttpsPolling({ immediate = false } = {}) {
         clearCanvasHttpsPolling();
         return;
     }
-
     const config = normalizeHttpsConfigData(sceneState?.httpsConfig || {});
     sceneState.httpsConfig = config;
     const signature = getCanvasHttpsPollingSignature(config);
@@ -2235,12 +2143,10 @@ function restartCanvasHttpsPolling({ immediate = false } = {}) {
         runInitialBindingValueChangeEvents([]);
         return;
     }
-
     if (httpsPollingTimer && signature === httpsPollingSignature) {
         if (immediate) runCanvasHttpsRequest();
         return;
     }
-
     clearCanvasHttpsPolling();
     httpsPollingSignature = signature;
     httpsPollingTimer = setInterval(runCanvasHttpsRequest, config.intervalSeconds * 1000);
@@ -2248,42 +2154,23 @@ function restartCanvasHttpsPolling({ immediate = false } = {}) {
 }
 
 async function requestSceneData(options) {
-    if (props.requestHandler) {
-        return props.requestHandler(options);
-    }
+    if (props.requestHandler) return props.requestHandler(options);
     return defaultRequestHandler(options);
 }
 
-async function defaultRequestHandler({
-    method,
-    url,
-    headers,
-    query,
-    body,
-    timeout = 10000,
-}) {
+async function defaultRequestHandler({ method, url, headers, query, body, timeout = 10000 }) {
     const requestMethod = method === "POST" ? "POST" : "GET";
     const requestHeaders = normalizeRequestHeaders(headers);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
     const requestUrl = appendQueryToUrl(url, query);
-    const requestOptions = {
-        method: requestMethod,
-        signal: controller.signal,
-    };
-    if (Object.keys(requestHeaders).length) {
-        requestOptions.headers = requestHeaders;
-    }
-    if (requestMethod !== "GET" && hasRequestValue(body)) {
-        requestOptions.body = stringifyRequestBody(body);
-    }
-
+    const requestOptions = { method: requestMethod, signal: controller.signal };
+    if (Object.keys(requestHeaders).length) requestOptions.headers = requestHeaders;
+    if (requestMethod !== "GET" && hasRequestValue(body)) requestOptions.body = stringifyRequestBody(body);
     try {
         const response = await fetch(requestUrl, requestOptions);
         const data = await readResponseData(response);
-        if (!response.ok) {
-            throw new Error(`${requestMethod} ${response.status}`);
-        }
+        if (!response.ok) throw new Error(`${requestMethod} ${response.status}`);
         return data;
     } finally {
         clearTimeout(timeoutId);
@@ -2326,7 +2213,6 @@ function appendQueryToUrl(url, query = {}) {
     const requestUrl = String(url || "").trim();
     const entries = Object.entries(query || {}).filter(([, value]) => value !== undefined);
     if (!entries.length) return requestUrl;
-
     const [urlWithoutHash, hash = ""] = requestUrl.split("#");
     const [baseUrl, search = ""] = urlWithoutHash.split("?");
     const params = new URLSearchParams(search);
@@ -2346,7 +2232,6 @@ async function runCanvasHttpsRequest() {
     if (props.mode !== "view" || !sceneState || httpsRequestRunning) return;
     const config = normalizeHttpsConfigData(sceneState.httpsConfig || {});
     if (!config.enabled || !config.url) return;
-
     const headersResult = parseHttpsJsonText(config.headers, "Headers", { objectOnly: true });
     if (!headersResult.ok) {
         console.warn(headersResult.message);
@@ -2362,23 +2247,12 @@ async function runCanvasHttpsRequest() {
         console.warn(bodyResult.message);
         return;
     }
-
     httpsRequestRunning = true;
     try {
-        const requestOptions = {
-            method: config.method,
-            url: config.url,
-            timeout: 10000,
-        };
-        if (hasRequestValue(headersResult.value)) {
-            requestOptions.headers = headersResult.value;
-        }
-        if (hasRequestValue(queryResult.value)) {
-            requestOptions.query = queryResult.value;
-        }
-        if (hasRequestValue(bodyResult.value)) {
-            requestOptions.body = bodyResult.value;
-        }
+        const requestOptions = { method: config.method, url: config.url, timeout: 10000 };
+        if (hasRequestValue(headersResult.value)) requestOptions.headers = headersResult.value;
+        if (hasRequestValue(queryResult.value)) requestOptions.query = queryResult.value;
+        if (hasRequestValue(bodyResult.value)) requestOptions.body = bodyResult.value;
         const responseData = await requestSceneData(requestOptions);
         const processedData = await runHttpsResponseProcessor(responseData, config.processor);
         const changes = applyProcessedDataToSceneBindings(sceneState, processedData);
@@ -2390,7 +2264,7 @@ async function runCanvasHttpsRequest() {
             emitSceneChange();
         }
     } catch (error) {
-        console.error("预览数据请求失败", error);
+        console.error("Preview data request failed", error);
     } finally {
         httpsRequestRunning = false;
     }
@@ -2399,11 +2273,7 @@ async function runCanvasHttpsRequest() {
 function runInitialBindingValueChangeEvents(processedData = [], actualChanges = []) {
     if (props.mode !== "view" || !sceneState || initialValueChangeEventsExecuted) return;
     initialValueChangeEventsExecuted = true;
-
-    const actualChangeMap = new Map(
-        actualChanges.map((change) => [`${change.objectId || ""}:${change.dataId || ""}`, change]),
-    );
-
+    const actualChangeMap = new Map(actualChanges.map((change) => [`${change.objectId || ""}:${change.dataId || ""}`, change]));
     flattenModels(sceneState.models || [])
         .filter(hasExecutableValueChangeEvent)
         .forEach((objectData) => {
@@ -2425,7 +2295,6 @@ function runInitialBindingValueChangeEvents(processedData = [], actualChanges = 
                     initial: true,
                 };
             });
-
             runObjectEvents(objectData.id, "valueChange", {
                 initial: true,
                 changes: cloneData(changes),
@@ -2454,7 +2323,6 @@ function runBindingValueChangeEvents(changes, processedData) {
         if (!changesByObject.has(change.objectId)) changesByObject.set(change.objectId, []);
         changesByObject.get(change.objectId).push(change);
     });
-
     changesByObject.forEach((objectChanges, objectId) => {
         runObjectEvents(objectId, "valueChange", {
             changes: cloneData(objectChanges),
@@ -2475,23 +2343,17 @@ function getHet3dBindingValueChanges(nextObject, previousObject, payload = {}) {
     if (!nextObject?.id) return [];
     const payloadKeys = new Set(Object.keys(payload || {}).filter((key) => key !== "id"));
     const previousBindings = new Map(
-        (previousObject?.dataBindings || []).map((bindingItem, index) => [
-            getBindingChangeKey(bindingItem, index),
-            bindingItem,
-        ]),
+        (previousObject?.dataBindings || []).map((bindingItem, index) => [getBindingChangeKey(bindingItem, index), bindingItem]),
     );
     const latestObject = getObjectData(nextObject.id) || nextObject;
-
     return (nextObject.dataBindings || [])
         .map((bindingItem, index) => {
             const propName = String(bindingItem?.propName || "").trim();
             if (!propName || !payloadKeys.has(propName)) return null;
-
             const previousBinding = previousBindings.get(getBindingChangeKey(bindingItem, index));
             const previousValue = getBindingRuntimeValue(previousObject, previousBinding, propName);
             const currentValue = getBindingRuntimeValue(nextObject, bindingItem, propName);
             if (isEventDataValueEqual(previousValue, currentValue)) return null;
-
             return {
                 objectId: nextObject.id,
                 object: cloneData(latestObject),
@@ -2513,9 +2375,7 @@ function getBindingChangeKey(bindingItem, index) {
 }
 
 function getBindingRuntimeValue(objectData, bindingItem, propName) {
-    if (bindingItem && Object.prototype.hasOwnProperty.call(bindingItem, "value")) {
-        return bindingItem.value;
-    }
+    if (bindingItem && Object.prototype.hasOwnProperty.call(bindingItem, "value")) return bindingItem.value;
     return objectData?.[propName];
 }
 
@@ -2536,81 +2396,450 @@ function toggleId(ids, id) {
     return ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id];
 }
 
+function beginAxisTransform(event, axisHit) {
+    const id = sceneState?.editorState?.selectedIds?.[0] || gizmoManager?.attachedNode?.metadata?.sceneObjectId || "";
+    const node = objectMap.get(id);
+    const objectData = getObjectData(id);
+    if (!node || !objectData || objectData.locked || !axisHit?.axis) return false;
+
+    event.preventDefault();
+    event.stopPropagation?.();
+    releaseActiveGizmoDrags();
+
+    const origin = node.getAbsolutePosition?.() || node.position.clone();
+    const axisWorld = getTransformAxisWorld(node, axisHit.axis);
+    const axisDistance = getAxisPointerDistance(event, origin, axisWorld);
+    const centerScreen = projectWorldToCanvas(origin);
+    const startPointer = getCanvasPoint(event);
+    const startAngle = Math.atan2(startPointer.y - centerScreen.y, startPointer.x - centerScreen.x);
+    axisTransform = {
+        mode: axisHit.mode,
+        axis: axisHit.axis,
+        id,
+        node,
+        origin,
+        axisWorld,
+        axisScreen: getAxisScreenDirection(origin, axisWorld),
+        centerScreen,
+        startPointer,
+        startAngle,
+        startAxisDistance: axisDistance,
+        startAbsolutePosition: origin.clone(),
+        startPosition: node.position.clone(),
+        startRotation: getNodeRotation(node).clone(),
+        startScaling: node.scaling.clone(),
+        moved: false,
+    };
+    pendingEditPointer = null;
+    cameraDrag = null;
+    transformDragging = true;
+    pendingTransformChange = false;
+    setCameraControlEnabled(false);
+    return true;
+}
+
+function releaseActiveGizmoDrags() {
+    [
+        gizmoManager?.gizmos.positionGizmo,
+        gizmoManager?.gizmos.rotationGizmo,
+        gizmoManager?.gizmos.scaleGizmo,
+    ]
+        .flatMap((gizmo) => [gizmo?.xGizmo, gizmo?.yGizmo, gizmo?.zGizmo, gizmo?.uniformScaleGizmo])
+        .filter(Boolean)
+        .forEach((gizmo) => gizmo.dragBehavior?.releaseDrag?.());
+}
+
+function updateAxisTransform(event) {
+    if (!axisTransform || !sceneState) return;
+    if (axisTransform.mode === "rotate") updateAxisRotation(event);
+    else if (axisTransform.mode === "scale") updateAxisScale(event);
+    else updateAxisTranslation(event);
+    axisTransform.moved = true;
+    pendingTransformChange = true;
+    syncSelectedObjectsFromBabylon(false);
+    updateSelectionHelpers();
+}
+
+function updateAxisTranslation(event) {
+    const state = axisTransform;
+    const distance = getAxisPointerDistance(event, state.origin, state.axisWorld);
+    const useScreenFallback = distance === null || state.startAxisDistance === null;
+    const delta = useScreenFallback
+        ? getAxisScreenDelta(event, state) * getScreenWorldStep(state.origin)
+        : distance - state.startAxisDistance;
+    const nextAbsolutePosition = state.startAbsolutePosition.add(state.axisWorld.scale(delta));
+    setNodeAbsolutePosition(state.node, nextAbsolutePosition);
+}
+
+function updateAxisRotation(event) {
+    const state = axisTransform;
+    const point = getCanvasPoint(event);
+    const currentAngle = Math.atan2(point.y - state.centerScreen.y, point.x - state.centerScreen.x);
+    const fallbackDelta = (point.x - state.startPointer.x - (point.y - state.startPointer.y)) * 0.01;
+    const angleDelta = Number.isFinite(currentAngle) && Number.isFinite(state.startAngle)
+        ? normalizeAngle(currentAngle - state.startAngle)
+        : fallbackDelta;
+    state.node.rotationQuaternion = null;
+    state.node.rotation.copyFrom(state.startRotation);
+    state.node.rotation[state.axis] = state.startRotation[state.axis] + angleDelta;
+}
+
+function updateAxisScale(event) {
+    const state = axisTransform;
+    const delta = getAxisScreenDelta(event, state);
+    const factor = Math.max(0.01, 1 + delta / 140);
+    state.node.scaling.copyFrom(state.startScaling);
+    state.node.scaling[state.axis] = Math.max(0.01, state.startScaling[state.axis] * factor);
+}
+
+function finishAxisTransform() {
+    const shouldEmit = axisTransform?.moved;
+    axisTransform = null;
+    cameraDrag = null;
+    transformDragging = false;
+    setCameraControlEnabled(true);
+    syncSelectedObjectsFromBabylon();
+    if (shouldEmit) {
+        pendingTransformChange = false;
+        scheduleCameraRangeUpdate();
+        emitSceneChange();
+    }
+}
+
+function getTransformAxisWorld(node, axis) {
+    const localAxis = new BABYLON.Vector3(axis === "x" ? 1 : 0, axis === "y" ? 1 : 0, axis === "z" ? 1 : 0);
+    const matrix = node.getWorldMatrix?.() || BABYLON.Matrix.Identity();
+    const worldAxis = BABYLON.Vector3.TransformNormal(localAxis, matrix);
+    if (worldAxis.lengthSquared() < 0.000001) return localAxis;
+    return worldAxis.normalize();
+}
+
+function getAxisPointerDistance(event, origin, axisWorld) {
+    const ray = getPickingRay(event);
+    const rayDirection = ray.direction.normalize();
+    const lineDirection = axisWorld.normalize();
+    const dot = BABYLON.Vector3.Dot(lineDirection, rayDirection);
+    const denominator = 1 - dot * dot;
+    if (Math.abs(denominator) < 0.000001) return null;
+    const between = origin.subtract(ray.origin);
+    const lineDot = BABYLON.Vector3.Dot(lineDirection, between);
+    const rayDot = BABYLON.Vector3.Dot(rayDirection, between);
+    return (dot * rayDot - lineDot) / denominator;
+}
+
+function getAxisScreenDelta(event, state) {
+    const point = getCanvasPoint(event);
+    const deltaX = point.x - state.startPointer.x;
+    const deltaY = point.y - state.startPointer.y;
+    return deltaX * state.axisScreen.x + deltaY * state.axisScreen.y;
+}
+
+function getAxisScreenDirection(origin, axisWorld) {
+    const start = projectWorldToCanvas(origin);
+    const end = projectWorldToCanvas(origin.add(axisWorld.scale(getScreenWorldStep(origin) * 80)));
+    const x = end.x - start.x;
+    const y = end.y - start.y;
+    const length = Math.hypot(x, y);
+    if (length < 0.000001) return { x: 1, y: 0 };
+    return { x: x / length, y: y / length };
+}
+
+function getScreenWorldStep(origin) {
+    const distance = camera?.position ? BABYLON.Vector3.Distance(camera.position, origin) : 8;
+    return Math.max(distance / 900, 0.002);
+}
+
+function projectWorldToCanvas(point) {
+    const rect = canvas.getBoundingClientRect();
+    const viewport = camera.viewport.toGlobal(rect.width || canvas.width || 1, rect.height || canvas.height || 1);
+    const projected = BABYLON.Vector3.Project(
+        point,
+        BABYLON.Matrix.IdentityReadOnly,
+        scene.getTransformMatrix(),
+        viewport,
+    );
+    return { x: projected.x, y: projected.y };
+}
+
+function setNodeAbsolutePosition(node, absolutePosition) {
+    if (typeof node.setAbsolutePosition === "function") {
+        node.setAbsolutePosition(absolutePosition);
+        return;
+    }
+    if (!node.parent) {
+        node.position.copyFrom(absolutePosition);
+        return;
+    }
+    node.position.copyFrom(worldToLocal(node.parent, absolutePosition));
+}
+
+function normalizeAngle(angle) {
+    let next = angle;
+    while (next > Math.PI) next -= Math.PI * 2;
+    while (next < -Math.PI) next += Math.PI * 2;
+    return next;
+}
+
 function beginDirectDrag(event, ids) {
     const draggableIds = ids.filter((id) => !getObjectData(id)?.locked && objectMap.has(id));
     if (!draggableIds.length) return;
-
     event.preventDefault();
-    setPointer(event);
-    raycaster.setFromCamera(pointer, camera);
-    const normal = camera.getWorldDirection(new THREE.Vector3()).normalize();
+    const normal = camera.getForwardRay().direction.normalize();
     const firstObject = objectMap.get(draggableIds[0]);
     if (!firstObject) return;
-    const worldPosition = firstObject.getWorldPosition(new THREE.Vector3());
-    dragPlane.setFromNormalAndCoplanarPoint(normal, worldPosition);
-    const startPoint = new THREE.Vector3();
-    raycaster.ray.intersectPlane(dragPlane, startPoint);
-
+    const worldPosition = firstObject.getAbsolutePosition?.() || firstObject.position;
+    const ray = getPickingRay(event);
+    const startPoint = intersectRayPlane(ray, worldPosition, normal);
+    if (!startPoint) return;
     directDrag = {
         ids: draggableIds,
+        planePoint: worldPosition.clone(),
+        planeNormal: normal.clone(),
         startPoint,
-        startPositions: new Map(
-            draggableIds
-                .map((id) => [id, objectMap.get(id)?.position.clone()])
-                .filter(([, value]) => value),
-        ),
+        startPositions: new Map(draggableIds.map((id) => [id, objectMap.get(id)?.position.clone()]).filter(([, value]) => value)),
         moved: false,
     };
-    controls.enabled = false;
+    setCameraControlEnabled(false);
 }
 
 function handlePointerMove(event) {
+    if (axisTransform && props.mode === "edit") {
+        updateAxisTransform(event);
+        return;
+    }
+    if (pendingEditPointer && props.mode === "edit") {
+        maybeBeginEditDirectDrag(event);
+    }
+    if (!directDrag) {
+        updateCameraDrag(event);
+    }
     if (!directDrag || !sceneState) return;
-    setPointer(event);
-    raycaster.setFromCamera(pointer, camera);
-    const point = new THREE.Vector3();
-    if (!raycaster.ray.intersectPlane(dragPlane, point)) return;
-    const delta = point.sub(directDrag.startPoint);
-
+    const ray = getPickingRay(event);
+    const point = intersectRayPlane(ray, directDrag.planePoint, directDrag.planeNormal);
+    if (!point) return;
+    const delta = point.subtract(directDrag.startPoint);
     directDrag.ids.forEach((id) => {
-        const object3d = objectMap.get(id);
+        const node = objectMap.get(id);
         const startPosition = directDrag.startPositions.get(id);
         const objectData = getObjectData(id);
-        if (!object3d || !startPosition || !objectData) return;
-        object3d.position.copy(startPosition).add(delta);
+        if (!node || !startPosition || !objectData) return;
+        node.position = startPosition.add(delta);
     });
-    selectionHelpers.forEach((helper) => helper.update?.());
+    updateSelectionHelpers();
     directDrag.moved = true;
 }
 
-function handlePointerUp() {
-    if (!directDrag) return;
+function handlePointerUp(event) {
+    if (axisTransform && props.mode === "edit") {
+        finishAxisTransform();
+        return;
+    }
+    if (pendingViewClick && props.mode === "view") {
+        finishPendingViewClick(event);
+    }
+    if (pendingEditPointer && props.mode === "edit") {
+        finishPendingEditClick(event);
+    }
+    if (!directDrag) {
+        cameraDrag = null;
+        return;
+    }
     const shouldEmit = directDrag.moved;
     directDrag = null;
-    controls.enabled = true;
-    syncSelectedObjectsFromThree();
+    cameraDrag = null;
+    setCameraControlEnabled(true);
+    syncSelectedObjectsFromBabylon();
     if (shouldEmit) {
         scheduleCameraRangeUpdate();
         emitSceneChange();
     }
 }
 
-function applySelection(ids, shouldEmit) {
-    const filtered = ids.filter(
-        (id) => objectMap.has(id) || findModelById(sceneState?.models || [], id),
+function disableDefaultPointerCameraInput() {
+    const pointerInput = camera?.inputs?.attached?.pointers;
+    if (pointerInput) {
+        pointerInput.buttons = [];
+    }
+}
+
+function disableDefaultWheelCameraInput() {
+    const wheelInput = camera?.inputs?.attached?.mousewheel;
+    if (wheelInput) camera.inputs.remove(wheelInput);
+}
+
+function handleCanvasContextMenu(event) {
+    event.preventDefault();
+}
+
+function handleCanvasWheel(event) {
+    if (!camera || !sceneState) return;
+    event.preventDefault();
+    event.stopPropagation?.();
+    const delta = Number(event.deltaY || 0);
+    if (!Number.isFinite(delta) || delta === 0) return;
+    const zoomFactor = Math.pow(1.0015, delta);
+    camera.inertialRadiusOffset = 0;
+    camera.lowerRadiusLimit = 0.0001;
+    camera.upperRadiusLimit = null;
+    camera.radius = Math.max(0.0001, camera.radius * zoomFactor);
+    updateCameraRangeToScene();
+    syncCameraToState();
+}
+
+function beginCameraDragCandidate(event, mode = "rotate") {
+    cameraDrag = {
+        mode,
+        startX: event.clientX,
+        startY: event.clientY,
+        startAlpha: camera?.alpha || 0,
+        startBeta: camera?.beta || 0,
+        startRadius: camera?.radius || 1,
+        startTarget: camera?.target?.clone?.() || BABYLON.Vector3.Zero(),
+        startPosition: camera?.position?.clone?.() || BABYLON.Vector3.Zero(),
+        startRight: camera?.getDirection?.(BABYLON.Axis.X)?.normalize?.() || BABYLON.Vector3.Right(),
+        startUp: camera?.getDirection?.(BABYLON.Axis.Y)?.normalize?.() || BABYLON.Vector3.Up(),
+        moved: false,
+    };
+}
+
+function updateCameraDrag(event) {
+    if (!cameraDrag || !camera || (props.mode === "edit" && isGizmoPointerActive(event))) return;
+    const isRotateDrag = cameraDrag.mode !== "pan";
+    const requiredButtonMask = isRotateDrag ? 1 : 2;
+    if ((event.buttons & requiredButtonMask) !== requiredButtonMask) return;
+    const distance = getPointerDistance(event, cameraDrag);
+    if (distance <= 3) return;
+    const dx = Number(event.clientX || 0) - cameraDrag.startX;
+    const dy = Number(event.clientY || 0) - cameraDrag.startY;
+    if (cameraDrag.mode === "pan") {
+        panCameraByScreenDelta(dx, dy);
+        cameraDrag.moved = true;
+        syncCameraToState();
+        return;
+    }
+    const sensitivity = 0.005;
+    camera.target.copyFrom(cameraDrag.startTarget);
+    camera.radius = cameraDrag.startRadius;
+    camera.alpha = cameraDrag.startAlpha - dx * sensitivity;
+    camera.beta = clamp(cameraDrag.startBeta - dy * sensitivity, 0.08, Math.PI - 0.08);
+    cameraDrag.moved = true;
+    syncCameraToState();
+}
+
+function panCameraByScreenDelta(deltaX, deltaY) {
+    if (!cameraDrag || !camera) return;
+    const rect = canvas?.getBoundingClientRect?.();
+    const viewportHeight = Math.max(rect?.height || canvas?.clientHeight || canvas?.height || 1, 1);
+    const panScale = (cameraDrag.startRadius || BABYLON.Vector3.Distance(cameraDrag.startPosition, cameraDrag.startTarget) || 1) / viewportHeight;
+    const offset = cameraDrag.startRight.scale(-deltaX * panScale).add(cameraDrag.startUp.scale(deltaY * panScale));
+    setCameraTargetAndPosition(cameraDrag.startTarget.add(offset), cameraDrag.startPosition.add(offset));
+}
+
+function setCameraTargetAndPosition(target, position) {
+    camera.inertialAlphaOffset = 0;
+    camera.inertialBetaOffset = 0;
+    camera.inertialRadiusOffset = 0;
+    camera.inertialPanningX = 0;
+    camera.inertialPanningY = 0;
+    camera.target.copyFrom(target);
+    camera.position.copyFrom(position);
+    camera.rebuildAnglesAndRadius?.();
+}
+
+function maybeBeginEditDirectDrag(event) {
+    const pending = pendingEditPointer;
+    if (!pending || !pending.hit || pending.ctrlKey || pending.metaKey) return;
+    if (getPointerDistance(event, pending) <= 6) return;
+    if (isGizmoPointerActive(event)) {
+        pendingEditPointer = null;
+        return;
+    }
+    const selectedIds = pending.selectedIds.length ? pending.selectedIds : [];
+    const hitIsSelected = selectedIds.includes(pending.hit.id);
+    const dragIds = hitIsSelected ? selectedIds.filter((id) => objectMap.has(id)) : [pending.hit.id];
+    if (!dragIds.length) {
+        pendingEditPointer = null;
+        return;
+    }
+    const objectData = getObjectData(pending.hit.id);
+    pendingEditPointer = null;
+    if (!objectData || objectData.locked) return;
+    if (!hitIsSelected) applySelection([pending.hit.id], true);
+    beginDirectDrag(event, dragIds);
+}
+
+function finishPendingViewClick(event) {
+    const pending = pendingViewClick;
+    pendingViewClick = null;
+    if (!pending) return;
+    const distance = getPointerDistance(event, pending);
+    if (distance > 6) return;
+    if (pending.hit) {
+        floatingDevicePopoverOpenedDuringClickEvent = false;
+        const actions = runObjectEvents(pending.hit.id, "leftClick", {
+            pointerEvent: event,
+            hit: pending.hit,
+        });
+        const shouldKeepFloatingDevicePopover =
+            actions.includes("devicePopover") || floatingDevicePopoverOpenedDuringClickEvent;
+        floatingDevicePopoverOpenedDuringClickEvent = false;
+        if (!shouldKeepFloatingDevicePopover) hideFloatingDevicePopover();
+    } else {
+        hideFloatingDevicePopover();
+    }
+}
+
+function getPointerDistance(event, pending) {
+    return Math.hypot(
+        Number(event?.clientX || 0) - pending.startX,
+        Number(event?.clientY || 0) - pending.startY,
     );
+}
+
+function getPointDistance(left, right) {
+    return Math.hypot(Number(left.x || 0) - Number(right.x || 0), Number(left.y || 0) - Number(right.y || 0));
+}
+
+function getPointToSegmentDistance(point, start, end) {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared <= 0.000001) return getPointDistance(point, start);
+    const t = clamp(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared, 0, 1);
+    return getPointDistance(point, { x: start.x + dx * t, y: start.y + dy * t });
+}
+
+function intersectRayPlane(ray, planePoint, planeNormal) {
+    const denominator = BABYLON.Vector3.Dot(ray.direction, planeNormal);
+    if (Math.abs(denominator) < 0.000001) return null;
+    const distance = BABYLON.Vector3.Dot(planePoint.subtract(ray.origin), planeNormal) / denominator;
+    if (distance < 0) return null;
+    return ray.origin.add(ray.direction.scale(distance));
+}
+
+function setCameraControlEnabled(enabled) {
+    if (!camera || !canvas) return;
+    if (enabled) {
+        camera.attachControl(canvas, true);
+        disableDefaultPointerCameraInput();
+    } else {
+        camera.detachControl(canvas);
+    }
+}
+
+function applySelection(ids, shouldEmit) {
+    if (!sceneState) return;
+    const filtered = ids.filter((id) => objectMap.has(id) || findModelById(sceneState?.models || [], id));
     sceneState.editorState = {
         ...(sceneState.editorState || {}),
         selectedIds: filtered,
     };
     updateSelectionHelpers();
-
     if (filtered.length === 1 && objectMap.has(filtered[0]) && props.mode === "edit") {
-        transformControls.attach(objectMap.get(filtered[0]));
+        gizmoManager?.attachToNode(objectMap.get(filtered[0]));
     } else {
-        transformControls.detach();
+        detachGizmo();
     }
-
     if (shouldEmit) {
         emit("select", {
             selectedIds: filtered,
@@ -2619,56 +2848,63 @@ function applySelection(ids, shouldEmit) {
     }
 }
 
+function detachGizmo() {
+    gizmoManager?.attachToNode(null);
+}
+
 function updateSelectionHelpers() {
     clearSelectionHelpers();
     const ids = sceneState?.editorState?.selectedIds || [];
     ids.slice(0, maxSelectionHelpers).forEach((id) => {
-        const object3d = objectMap.get(id);
-        if (!object3d) return;
-        const helper = new THREE.BoxHelper(object3d, selectionHelperColor);
-        helper.material.depthTest = false;
-        helper.material.depthWrite = false;
-        helper.material.transparent = true;
-        helper.material.opacity = 1;
-        helper.renderOrder = selectionHelperRenderOrder;
+        const node = objectMap.get(id);
+        if (!node) return;
+        const bounds = getNodeBounds(node);
+        if (isBoundsEmpty(bounds)) return;
+        const helper = createSelectionBoundsHelper(bounds);
         selectionHelpers.push(helper);
-        scene.add(helper);
     });
+}
+
+function createSelectionBoundsHelper(bounds) {
+    const min = bounds.min;
+    const max = bounds.max;
+    const p = [
+        new BABYLON.Vector3(min.x, min.y, min.z),
+        new BABYLON.Vector3(max.x, min.y, min.z),
+        new BABYLON.Vector3(max.x, max.y, min.z),
+        new BABYLON.Vector3(min.x, max.y, min.z),
+        new BABYLON.Vector3(min.x, min.y, max.z),
+        new BABYLON.Vector3(max.x, min.y, max.z),
+        new BABYLON.Vector3(max.x, max.y, max.z),
+        new BABYLON.Vector3(min.x, max.y, max.z),
+    ];
+    const lines = [
+        [p[0], p[1]], [p[1], p[2]], [p[2], p[3]], [p[3], p[0]],
+        [p[4], p[5]], [p[5], p[6]], [p[6], p[7]], [p[7], p[4]],
+        [p[0], p[4]], [p[1], p[5]], [p[2], p[6]], [p[3], p[7]],
+    ];
+    const helper = BABYLON.MeshBuilder.CreateLineSystem("selectionHelper", { lines }, scene);
+    helper.color = selectionHelperColor;
+    helper.isPickable = false;
+    helper.metadata = { selectionHelper: true };
+    return helper;
 }
 
 function clearSelectionHelpers() {
-    selectionHelpers.splice(0).forEach((helper) => {
-        scene?.remove(helper);
-        helper.geometry?.dispose?.();
-        helper.material?.dispose?.();
-    });
+    selectionHelpers.splice(0).forEach((helper) => helper.dispose(false, true));
 }
 
-function syncSelectedObjectsFromThree(shouldUpdateHelpers = true) {
+function syncSelectedObjectsFromBabylon(shouldUpdateHelpers = true) {
     const ids = sceneState?.editorState?.selectedIds || [];
     ids.forEach((id) => {
-        const object3d = objectMap.get(id);
+        const node = objectMap.get(id);
         const objectData = getObjectData(id);
-        if (!object3d || !objectData) return;
-        objectData.position = {
-            x: round(object3d.position.x),
-            y: round(object3d.position.y),
-            z: round(object3d.position.z),
-        };
-        objectData.rotation = {
-            x: round(object3d.rotation.x),
-            y: round(object3d.rotation.y),
-            z: round(object3d.rotation.z),
-        };
-        objectData.scale = {
-            x: round(object3d.scale.x),
-            y: round(object3d.scale.y),
-            z: round(object3d.scale.z),
-        };
+        if (!node || !objectData) return;
+        objectData.position = vectorToData(node.position);
+        objectData.rotation = vectorToData(getNodeRotation(node));
+        objectData.scale = vectorToData(node.scaling);
     });
-    if (shouldUpdateHelpers) {
-        updateSelectionHelpers();
-    }
+    if (shouldUpdateHelpers) updateSelectionHelpers();
 }
 
 function getObjectData(id) {
@@ -2704,11 +2940,8 @@ function installCanvasHet3dGlobal() {
 function restoreCanvasHet3dGlobal() {
     if (typeof window === "undefined" || !props.installGlobal) return;
     if (window.het3d === canvasHet3dApi) {
-        if (hasPreviousHet3dDescriptor) {
-            Object.defineProperty(window, "het3d", previousHet3dDescriptor);
-        } else {
-            delete window.het3d;
-        }
+        if (hasPreviousHet3dDescriptor) Object.defineProperty(window, "het3d", previousHet3dDescriptor);
+        else delete window.het3d;
     }
     previousHet3dDescriptor = null;
     hasPreviousHet3dDescriptor = false;
@@ -2733,26 +2966,16 @@ async function handleDrop(event) {
 }
 
 function getDropPosition(event) {
-    setPointer(event);
-    raycaster.setFromCamera(pointer, camera);
-    const objects = getSelectableObjects();
-    const hits = raycaster.intersectObjects(objects, true);
-    if (hits.length) return hits[0].point;
-
-    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-    const point = new THREE.Vector3();
-    if (raycaster.ray.intersectPlane(groundPlane, point)) {
-        return point;
-    }
-    return new THREE.Vector3(0, 0.5, 0);
+    const hit = getHit(event);
+    if (hit?.point) return hit.point;
+    const ray = getPickingRay(event);
+    const point = intersectRayPlane(ray, BABYLON.Vector3.Zero(), BABYLON.Vector3.Up());
+    return point || new BABYLON.Vector3(0, 0.5, 0);
 }
 
-async function addObjectFromResource(resource, position = new THREE.Vector3(0, 0.5, 0)) {
+async function addObjectFromResource(resource, position = new BABYLON.Vector3(0, 0.5, 0)) {
     if (!sceneState) return null;
-    if (resource.type === "localModel") {
-        return importLocalModelResource(resource);
-    }
-
+    if (resource.type === "localModel") return importLocalModelResource(resource);
     const type = resource.type || "box";
     const defaultScale = getDefaultObjectScale(type, resource);
     const objectData = createSceneObject(type, {
@@ -2769,11 +2992,10 @@ async function addObjectFromResource(resource, position = new THREE.Vector3(0, 0
             label: resource.name,
         },
     });
-
     sceneState.models.push(objectData);
-    const object3d = await createThreeObject(objectData);
-    objectMap.set(objectData.id, object3d);
-    contentGroup.add(object3d);
+    const node = await createBabylonObject(objectData);
+    objectMap.set(objectData.id, node);
+    node.parent = contentRoot;
     applySelection([objectData.id], true);
     updateGridToScene();
     scheduleCameraRangeUpdate();
@@ -2796,11 +3018,8 @@ function getSelectedCopyableObjects() {
         const objectData = getCopyableObjectData(id);
         if (objectData) selectedObjectMap.set(objectData.id, objectData);
     });
-
     const selectedIds = new Set(selectedObjectMap.keys());
-    return Array.from(selectedObjectMap.values()).filter(
-        (objectData) => !hasSelectedAncestor(objectData, selectedIds),
-    );
+    return Array.from(selectedObjectMap.values()).filter((objectData) => !hasSelectedAncestor(objectData, selectedIds));
 }
 
 function getCopyableObjectData(id) {
@@ -2834,34 +3053,22 @@ function hasSelectedAncestor(objectData, selectedIds) {
 
 async function pasteCopiedObjects() {
     if (!sceneState || !copiedSceneObjects.length) return [];
-
     pasteSerial += 1;
-    const context = {
-        idMap: new Map(),
-        pasteSerial,
-    };
-    const pastedObjects = copiedSceneObjects.map((objectData) =>
-        createPastedObjectTree(objectData, context, true),
-    );
+    const context = { idMap: new Map(), pasteSerial };
+    const pastedObjects = copiedSceneObjects.map((objectData) => createPastedObjectTree(objectData, context, true));
     remapPastedObjectReferences(pastedObjects, context.idMap);
-
     const offset = getPasteOffsetVector(pasteSerial);
     pastedObjects.forEach((objectData) => {
         objectData.parentId = null;
         offsetObjectTreePosition(objectData, offset);
     });
-
     for (const objectData of pastedObjects) {
         sceneState.models.push(objectData);
-        const object3d = await createThreeObject(objectData);
-        objectMap.set(objectData.id, object3d);
-        contentGroup.add(object3d);
+        const node = await createBabylonObject(objectData);
+        objectMap.set(objectData.id, node);
+        node.parent = contentRoot;
     }
-
-    applySelection(
-        pastedObjects.map((objectData) => objectData.id),
-        true,
-    );
+    applySelection(pastedObjects.map((objectData) => objectData.id), true);
     updateGridToScene();
     scheduleCameraRangeUpdate();
     emitSceneChange();
@@ -2873,31 +3080,22 @@ function createPastedObjectTree(sourceObject, context, isRoot = false) {
     const previousId = objectData.id;
     objectData.id = createId("obj");
     context.idMap.set(previousId, objectData.id);
-    if (isRoot) {
-        objectData.name = createPastedObjectName(objectData.name, context.pasteSerial);
-    }
-    objectData.children = (objectData.children || []).map((child) =>
-        createPastedObjectTree(child, context),
-    );
+    if (isRoot) objectData.name = createPastedObjectName(objectData.name, context.pasteSerial);
+    objectData.children = (objectData.children || []).map((child) => createPastedObjectTree(child, context));
     regeneratePastedObjectInternalIds(objectData);
     return objectData;
 }
 
 function createPastedObjectName(name, serial) {
-    const baseName = String(name || "对象").trim() || "对象";
-    return serial > 1 ? `${baseName} 副本 ${serial}` : `${baseName} 副本`;
+    const baseName = String(name || "Object").trim() || "Object";
+    return serial > 1 ? `${baseName} Copy ${serial}` : `${baseName} Copy`;
 }
 
 function regeneratePastedObjectInternalIds(objectData) {
     if (Array.isArray(objectData.events)) {
-        objectData.events = objectData.events.map((eventItem) => ({
-            ...eventItem,
-            id: createId("event"),
-        }));
+        objectData.events = objectData.events.map((eventItem) => ({ ...eventItem, id: createId("event") }));
     }
-    if (Array.isArray(objectData.animations)) {
-        objectData.animations = objectData.animations.map(regeneratePastedAnimationIds);
-    }
+    if (Array.isArray(objectData.animations)) objectData.animations = objectData.animations.map(regeneratePastedAnimationIds);
 }
 
 function regeneratePastedAnimationIds(animation) {
@@ -2907,24 +3105,17 @@ function regeneratePastedAnimationIds(animation) {
         segments: (animation.segments || []).map((segment) => ({
             ...segment,
             id: createId("segment"),
-            properties: (segment.properties || []).map((property) => ({
-                ...property,
-                id: createId("property"),
-            })),
+            properties: (segment.properties || []).map((property) => ({ ...property, id: createId("property") })),
         })),
     };
 }
 
 function remapPastedObjectReferences(pastedObjects, idMap) {
     flattenModels(pastedObjects).forEach((objectData) => {
-        if (objectData.parentId && idMap.has(objectData.parentId)) {
-            objectData.parentId = idMap.get(objectData.parentId);
-        }
+        if (objectData.parentId && idMap.has(objectData.parentId)) objectData.parentId = idMap.get(objectData.parentId);
         if (Array.isArray(objectData.animations)) {
             objectData.animations.forEach((animation) => {
-                if (idMap.has(animation.targetId)) {
-                    animation.targetId = idMap.get(animation.targetId);
-                }
+                if (idMap.has(animation.targetId)) animation.targetId = idMap.get(animation.targetId);
             });
         }
     });
@@ -2940,37 +3131,19 @@ function offsetObjectTreePosition(objectData, offset) {
 }
 
 function getPasteOffsetVector(serial) {
-    const step = getSceneRelativeObjectSize({
-        fallback: 0.8,
-        ratio: 0.03,
-        min: 0.6,
-        max: 2000,
-    });
-    return {
-        x: round(step * serial),
-        y: 0,
-        z: round(step * serial),
-    };
+    const step = getSceneRelativeObjectSize({ fallback: 0.8, ratio: 0.03, min: 0.6, max: 2000 });
+    return { x: round(step * serial), y: 0, z: round(step * serial) };
 }
 
 function getDefaultObjectScale(type, resource) {
     if (resource?.scale) return cloneData(resource.scale);
     if (isDefaultModelType(type)) {
         const size = getSceneRelativeDefaultModelScale();
-        return {
-            x: size,
-            y: size,
-            z: size,
-        };
+        return { x: size, y: size, z: size };
     }
     if (!["icon", "image"].includes(type)) return undefined;
-
     const size = type === "image" ? getSceneRelativeImageScale() : getSceneRelativeIconSize();
-    return {
-        x: size,
-        y: size,
-        z: size,
-    };
+    return { x: size, y: size, z: size };
 }
 
 function isDefaultModelType(type) {
@@ -2978,52 +3151,34 @@ function isDefaultModelType(type) {
 }
 
 function getSceneRelativeDefaultModelScale() {
-    return getSceneRelativeObjectSize({
-        fallback: 1,
-        ratio: 0.035,
-        min: 1,
-        max: 3000,
-    });
+    return getSceneRelativeObjectSize({ fallback: 1, ratio: 0.035, min: 1, max: 3000 });
 }
 
 function getSceneRelativeIconSize() {
-    return getSceneRelativeObjectSize({
-        fallback: 1.8,
-        ratio: 0.035,
-        min: 1.8,
-        max: 3000,
-    });
+    return getSceneRelativeObjectSize({ fallback: 1.8, ratio: 0.035, min: 1.8, max: 3000 });
 }
 
 function getSceneRelativeImageScale() {
-    return getSceneRelativeObjectSize({
-        fallback: 1.5,
-        ratio: 0.025,
-        min: 1.5,
-        max: 2500,
-    });
+    return getSceneRelativeObjectSize({ fallback: 1.5, ratio: 0.025, min: 1.5, max: 2500 });
 }
 
 function getSceneRelativeObjectSize({ fallback, ratio, min, max }) {
-    const box = getSceneReferenceBoundsForPlacements();
-    if (!box || box.isEmpty()) return fallback;
-
-    const size = new THREE.Vector3();
-    box.getSize(size);
+    const bounds = getSceneReferenceBoundsForPlacements();
+    if (!bounds || isBoundsEmpty(bounds)) return fallback;
+    const size = boundsSize(bounds);
     const maxDimension = Math.max(size.x, size.y, size.z);
     if (!Number.isFinite(maxDimension) || maxDimension <= 0) return fallback;
-
-    return round(THREE.MathUtils.clamp(maxDimension * ratio, min, max));
+    return round(clamp(maxDimension * ratio, min, max));
 }
 
 function getSceneReferenceBoundsForPlacements() {
-    const box = new THREE.Box3();
-    contentGroup?.children?.forEach((object) => {
-        const objectData = getObjectData(object.userData.sceneObjectId);
+    const bounds = createEmptyBounds();
+    contentRoot?.getChildren().forEach((node) => {
+        const objectData = getObjectData(node.metadata?.sceneObjectId);
         if (!objectData || objectData.type === "icon" || objectData.type === "image") return;
-        if (object.visible !== false) box.expandByObject(object);
+        if (node.isEnabled?.() !== false) expandBounds(bounds, getNodeBounds(node));
     });
-    return box.isEmpty() ? getSceneBounds() : box;
+    return isBoundsEmpty(bounds) ? getSceneBounds() : bounds;
 }
 
 function getResourceDropY(type, baseY, scale) {
@@ -3038,46 +3193,34 @@ function getResourceDropY(type, baseY, scale) {
 
 async function addPrimitive(type) {
     const resource = {
-        name:
-            {
-                box: "立方体",
-                sphere: "球体",
-                cylinder: "圆柱体",
-                plane: "平面",
-            }[type] || "模型",
+        name: { box: "Box", sphere: "Sphere", cylinder: "Cylinder", plane: "Plane" }[type] || "Model",
         type,
     };
-    return addObjectFromResource(resource, new THREE.Vector3(0, type === "plane" ? 0 : 0.5, 0));
+    return addObjectFromResource(resource, new BABYLON.Vector3(0, type === "plane" ? 0 : 0.5, 0));
 }
 
 function updateSceneObject(objectData) {
     const result = updateModelById(sceneState.models, objectData);
     if (!result.updated) return;
     sceneState.models = result.models;
-    const object3d = objectMap.get(objectData.id);
-    if (object3d) {
-        object3d.name = objectData.name;
-        object3d.position.set(objectData.position.x, objectData.position.y, objectData.position.z);
-        object3d.rotation.set(objectData.rotation.x, objectData.rotation.y, objectData.rotation.z);
-        object3d.scale.set(objectData.scale.x, objectData.scale.y, objectData.scale.z);
-        object3d.visible = objectData.visible !== false;
-        if (objectData.type === "icon") {
-            updateSpriteMaterial(object3d, objectData);
-        } else if (shouldApplyMaterialColor(objectData)) {
-            applyMaterialColorToObject(object3d, objectData.material?.color);
-        }
+    const node = objectMap.get(objectData.id);
+    if (node) {
+        node.name = objectData.name;
+        applyTransform(node, objectData);
+        node.setEnabled(objectData.visible !== false);
+        if (objectData.type === "icon") updateIconMaterial(node, objectData);
+        else if (shouldApplyMaterialColor(objectData)) applyMaterialColorToObject(node, objectData.material?.color);
     }
     updateSelectionHelpers();
     scheduleCameraRangeUpdate();
     emitSceneChange();
 }
 
-function updateSpriteMaterial(sprite, objectData) {
-    if (!sprite?.isSprite) return;
-    sprite.material?.map?.dispose?.();
-    sprite.material?.dispose?.();
-    sprite.material = createSpriteMaterial(
-        objectData.material?.symbol || "●",
+function updateIconMaterial(node, objectData) {
+    if (!(node instanceof BABYLON.AbstractMesh)) return;
+    node.material?.dispose?.(true, true);
+    node.material = createIconMaterial(
+        objectData.material?.symbol || "*",
         objectData.material?.color || "#4f7cff",
         objectData.material?.shape,
     );
@@ -3106,20 +3249,12 @@ async function setObjectVisible(id, visible) {
     const objectData = getObjectData(id);
     if (!objectData) return false;
     objectData.visible = visible;
-
-    const object3d = objectMap.get(id);
-    if (object3d) {
-        object3d.visible = visible;
-    } else {
-        await loadSceneData(sceneState);
-    }
-
+    const node = objectMap.get(id);
+    if (node) node.setEnabled(visible);
+    else await loadSceneData(sceneState);
     const selectedIds = sceneState.editorState?.selectedIds || [];
     if (!visible && selectedIds.includes(id)) {
-        applySelection(
-            selectedIds.filter((selectedId) => selectedId !== id),
-            true,
-        );
+        applySelection(selectedIds.filter((selectedId) => selectedId !== id), true);
     } else {
         updateSelectionHelpers();
     }
@@ -3130,20 +3265,13 @@ async function setObjectVisible(id, visible) {
 
 async function importModelFile(file) {
     if (!sceneState || !file) return false;
-    return importModelBlob({
-        name: file.name,
-        blob: file,
-    });
+    return importModelBlob({ name: file.name, blob: file });
 }
 
 async function importLocalModelResource(resource) {
     if (!sceneState || !resource?.url) return false;
-    const fileName =
-        resource.fileName || decodeURIComponent(resource.url.split("/").pop() || "model.glb");
-    return importModelSource({
-        name: resource.name || fileName,
-        modelPath: resource.url,
-    });
+    const fileName = resource.fileName || decodeURIComponent(resource.url.split("/").pop() || "model.glb");
+    return importModelSource({ name: resource.name || fileName, modelPath: resource.url });
 }
 
 async function importModelBlob({ name, blob }) {
@@ -3155,17 +3283,16 @@ async function importModelSource({ name, modelPath = "" }) {
     if (!sceneState || !modelPath) return false;
     loading.value = true;
     try {
-        const gltf = await gltfLoader.loadAsync(modelPath);
-        const cachedModel = createCachedGltfModelSource(gltf.scene);
-        const { meshes, layerEntries } = cachedModel;
-        const originOffset = getOriginOffsetForObject(gltf.scene);
-        const modelReference = { modelPath };
-        assetSceneCache.set(`path:${modelPath}`, cachedModel);
+        const runtime = await importModelRuntime(modelPath, { enabled: false });
+        const { meshes, layerEntries } = createCachedModelMetadata(runtime.content, runtime.meshes);
+        const originOffset = getOriginOffsetForObject(runtime.content);
+        runtime.root.dispose(false, true);
+        assetSceneCache.set(`path:${modelPath}`, { meshes, layerEntries });
 
         const parent = createSceneObject("importedModel", {
             name,
             nodeType: "model",
-            ...modelReference,
+            modelPath,
             children: [],
             position: { x: 0, y: 0, z: 0 },
             source: {
@@ -3176,32 +3303,29 @@ async function importModelSource({ name, modelPath = "" }) {
                 originMode: "xz-center-y-bottom",
             },
         });
-        const layerObjects = [];
-        layerEntries.forEach((entry) => {
+        const layerObjects = layerEntries.map((entry) => {
             const layerObject = createLayerObjectData(entry, parent, meshes);
             removeLayerMeshObjects(layerObject);
-            layerObjects.push(layerObject);
+            return layerObject;
         });
-
         if (!layerObjects.length) {
-            notifyMessage("warning", "导入文件中没有找到可用 mesh");
+            notifyMessage("warning", "No usable mesh was found in the imported model");
             return false;
         }
-
         parent.children = layerObjects;
         sceneState.models.push(parent);
-        const object3d = await createThreeObject(parent);
-        objectMap.set(parent.id, object3d);
-        contentGroup.add(object3d);
+        const node = await createBabylonObject(parent);
+        objectMap.set(parent.id, node);
+        node.parent = contentRoot;
         updateGridToScene();
         updateCameraRangeToScene();
         fitCameraToBox(getObjectBoundsByIds([parent.id]));
         applySelection([parent.id], true);
         emitSceneChange();
-        notifyMessage("success", `模型导入成功：${layerObjects.length} 个图层，${meshes.length} 个 mesh`);
+        notifyMessage("success", `Model imported: ${layerObjects.length} layers, ${meshes.length} meshes`);
         return true;
     } catch (error) {
-        notifyMessage("error", `模型导入失败：${error.message}`, error);
+        notifyMessage("error", `Model import failed: ${error.message}`, error);
         return false;
     } finally {
         loading.value = false;
@@ -3209,36 +3333,68 @@ async function importModelSource({ name, modelPath = "" }) {
 }
 
 function setTransformMode(mode) {
-    transformControls?.setMode(mode);
+    if (!gizmoManager) return;
+    gizmoManager.positionGizmoEnabled = mode === "translate";
+    gizmoManager.rotationGizmoEnabled = mode === "rotate";
+    gizmoManager.scaleGizmoEnabled = mode === "scale";
+    bindGizmoDragEvents();
     if (sceneState) {
-        sceneState.editorState = {
-            ...(sceneState.editorState || {}),
-            transformMode: mode,
-        };
+        sceneState.editorState = { ...(sceneState.editorState || {}), transformMode: mode };
     }
 }
 
+function bindGizmoDragEvents() {
+    clearGizmoObservers();
+    const gizmos = [
+        gizmoManager?.gizmos.positionGizmo,
+        gizmoManager?.gizmos.rotationGizmo,
+        gizmoManager?.gizmos.scaleGizmo,
+    ].filter(Boolean);
+    gizmos.forEach((gizmo) => {
+        const startObserver = gizmo.onDragStartObservable?.add?.(() => {
+            transformDragging = true;
+            setCameraControlEnabled(false);
+        });
+        const dragObserver = gizmo.onDragObservable?.add?.(() => {
+            pendingTransformChange = true;
+            syncSelectedObjectsFromBabylon(false);
+            updateSelectionHelpers();
+        });
+        const endObserver = gizmo.onDragEndObservable?.add?.(() => {
+            transformDragging = false;
+            setCameraControlEnabled(true);
+            if (pendingTransformChange) {
+                pendingTransformChange = false;
+                syncSelectedObjectsFromBabylon();
+                scheduleCameraRangeUpdate();
+                emitSceneChange();
+            }
+        });
+        if (startObserver) gizmoObserverDisposers.push(() => gizmo.onDragStartObservable.remove(startObserver));
+        if (dragObserver) gizmoObserverDisposers.push(() => gizmo.onDragObservable.remove(dragObserver));
+        if (endObserver) gizmoObserverDisposers.push(() => gizmo.onDragEndObservable.remove(endObserver));
+    });
+}
+
+function clearGizmoObservers() {
+    gizmoObserverDisposers.splice(0).forEach((dispose) => dispose());
+}
+
 function resetCamera() {
-    if (!fitCameraToBox(getSceneBounds())) {
-        applyCameraSettings(defaultCamera());
-    }
+    if (!fitCameraToBox(getSceneBounds())) applyCameraSettings(defaultCamera());
     emitSceneChange();
 }
 
 function focusSelection() {
     const ids = sceneState?.editorState?.selectedIds || [];
-    const box = ids.length ? getObjectBoundsByIds(ids) : getSceneBounds();
-    if (!fitCameraToBox(box)) return;
+    const bounds = ids.length ? getObjectBoundsByIds(ids) : getSceneBounds();
+    if (!fitCameraToBox(bounds)) return;
     emitSceneChange();
 }
 
 function selectAllSelectableObjects() {
     const ids = flattenModels(sceneState.models)
-        .filter(
-            (object) =>
-                !["importedLayer", "importedMesh"].includes(object.type) &&
-                object.visible !== false,
-        )
+        .filter((object) => !["importedLayer", "importedMesh"].includes(object.type) && object.visible !== false)
         .map((object) => object.id);
     applySelection(ids, true);
 }
@@ -3248,8 +3404,8 @@ function selectAllMeshes() {
 }
 
 function captureThumbnail() {
-    renderer.render(scene, camera);
-    const thumbnail = renderer.domElement.toDataURL("image/png");
+    scene.render();
+    const thumbnail = canvas.toDataURL("image/png");
     emit("thumbnail-ready", { thumbnail });
     return thumbnail;
 }
@@ -3257,6 +3413,25 @@ function captureThumbnail() {
 function getSceneSnapshot() {
     syncCameraToState();
     return normalizeSceneModelSources(sceneState);
+}
+
+function clamp(value, min, max) {
+    return Math.min(Math.max(Number(value) || 0, min), max);
+}
+
+function lerp(start, end, progress) {
+    return start + (end - start) * progress;
+}
+
+function notifyMessage(type, message, detail) {
+    const payload = { type, message, detail };
+    emit("message", payload);
+    if (typeof props.notify === "function") {
+        props.notify(payload);
+        return;
+    }
+    const logger = type === "error" ? console.error : type === "warning" ? console.warn : console.info;
+    logger(`[het3d] ${message}`, detail || "");
 }
 
 defineExpose({

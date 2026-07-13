@@ -1178,3 +1178,49 @@ src/het3d/index.d.ts
 README.md
 package.json
 ```
+
+## 2026-07-13 交互与画布配置补充
+
+### 编辑态变换
+
+- `setTransformMode("translate")` 对应 W/移动模式。
+- `setTransformMode("rotate")` 对应 E/旋转模式。
+- `setTransformMode("scale")` 对应 R/缩放模式。
+- 拖拽 X/Y/Z 单轴手柄时，只更新当前对象对应轴向的 `position`、`rotation` 或 `scale`。
+- 控制器轴向拖拽优先级高于对象选择、对象直接拖拽和相机控制。
+- 鼠标左键按住可选对象本体时支持直接拖拽移动；如果对象未选中，会先选中再拖拽；锁定对象不会进入拖拽。
+
+### 滚轮缩放
+
+组件会移除 Babylon.js 默认滚轮相机输入，并使用自定义滚轮逻辑控制 `ArcRotateCamera.radius`：
+
+- 不设置固定缩放上限。
+- 允许大场景继续拉远、小场景继续拉近。
+- 缩放后会同步更新相机 `near` / `far`，降低大模型视角移动时的裁剪和闪烁问题。
+
+### `canvas.axesSize`
+
+`applyCanvasSettings(canvas)` 支持坐标轴长度配置：
+
+```js
+het3dRef.value.applyCanvasSettings({
+    showAxes: true,
+    axesSize: 3,
+});
+```
+
+场景数据示例：
+
+```js
+canvas: {
+    backgroundColor: "#f5f7fb",
+    showGrid: true,
+    showAxes: true,
+    axesSize: 3,
+}
+```
+
+- `axesSize` 单位与场景坐标一致。
+- 默认值为 `3`。
+- 非法值会回退为默认值。
+- 组件内部限制范围为 `0.1` 到 `1000000`。

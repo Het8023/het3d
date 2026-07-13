@@ -13,12 +13,11 @@ export default defineConfig({
             formats: ["es", "umd"],
         },
         rollupOptions: {
-            external: [/^vue$/, /^three$/],
+            external: [/^vue$/],
             output: {
                 exports: "named",
                 globals: {
                     vue: "Vue",
-                    three: "THREE",
                 },
             },
         },

@@ -207,6 +207,7 @@ export function defaultCanvas() {
         backgroundColor: "#f5f7fb",
         showGrid: true,
         showAxes: true,
+        axesSize: 3,
     };
 }
 

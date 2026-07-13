@@ -1,7 +1,7 @@
 {
     "name": "het3d",
     "version": "0.1.2",
-    "description": "A Vue 3 and Three.js based 3D scene editor/viewer component.",
+    "description": "A Vue 3 and Babylon.js based 3D scene editor/viewer component.",
     "type": "module",
     "main": "./dist/het3d.umd.cjs",
     "module": "./dist/het3d.es.js",
@@ -25,8 +25,7 @@
     },
     "keywords": [
         "het3d",
-        "three",
-        "threejs",
+        "babylonjs",
         "vue3",
         "3d",
         "editor"
@@ -38,13 +37,15 @@
         "pack:check": "npm pack --dry-run"
     },
     "peerDependencies": {
-        "three": "^0.178.0",
         "vue": "^3.5.0"
     },
     "devDependencies": {
         "@vitejs/plugin-vue": "^5.2.4",
-        "three": "^0.178.0",
         "vite": "^6.3.5",
         "vue": "^3.5.17"
+    },
+    "dependencies": {
+        "@babylonjs/core": "^9.16.1",
+        "@babylonjs/loaders": "^9.16.1"
     }
 }
