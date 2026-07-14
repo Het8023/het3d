@@ -104,6 +104,7 @@ let sceneState = null;
 let suppressPropSync = false;
 let directDrag = null;
 let axisTransform = null;
+let axisHighlightLock = null;
 let pendingViewClick = null;
 let pendingEditPointer = null;
 let cameraDrag = null;
@@ -168,6 +169,7 @@ onBeforeUnmount(() => {
     window.removeEventListener("pointerup", handlePointerUp);
     clearSelectionHelpers();
     clearGizmoObservers();
+    unlockAxisHighlight();
     gizmoManager?.dispose();
     engine?.stopRenderLoop();
     scene?.dispose();
@@ -1452,6 +1454,71 @@ function getActiveModeGizmo(mode = getActiveTransformMode()) {
     return gizmoManager?.gizmos.positionGizmo || null;
 }
 
+function getAxisGizmo(mode, axis) {
+    if (!["x", "y", "z"].includes(axis)) return null;
+    return getActiveModeGizmo(mode)?.[`${axis}Gizmo`] || null;
+}
+
+function getAxisGizmoCache(axisGizmo) {
+    const axisCache = gizmoManager?._gizmoAxisCache;
+    if (!axisGizmo || !axisCache) return null;
+    const roots = [axisGizmo._rootMesh, axisGizmo._gizmoMesh].filter(Boolean);
+    for (const root of roots) {
+        if (axisCache.has(root)) return axisCache.get(root);
+        const children = root.getChildMeshes?.(false) || [];
+        for (const child of children) {
+            if (axisCache.has(child)) return axisCache.get(child);
+            if (axisCache.has(child.parent)) return axisCache.get(child.parent);
+        }
+    }
+    return null;
+}
+
+function lockAxisHighlight(mode, axis) {
+    unlockAxisHighlight();
+    const axisGizmo = getAxisGizmo(mode, axis);
+    const cache = getAxisGizmoCache(axisGizmo);
+    if (!axisGizmo || !cache?.gizmoMeshes?.length || !cache.hoverMaterial) return;
+    axisHighlightLock = {
+        cache,
+        restoreMaterial: cache.dragBehavior?.enabled ? cache.material : cache.disableMaterial,
+        material: cache.hoverMaterial,
+        previousActive: cache.active,
+    };
+    cache.active = true;
+    applyAxisHighlightLock();
+}
+
+function applyAxisHighlightLock() {
+    if (!axisHighlightLock) return;
+    const { cache, material } = axisHighlightLock;
+    if (!cache?.gizmoMeshes?.length || !material) return;
+    cache.active = true;
+    for (const mesh of cache.gizmoMeshes) {
+        if (mesh?.isDisposed?.()) continue;
+        mesh.material = material;
+        if (mesh.color && material.diffuseColor) {
+            mesh.color = material.diffuseColor;
+        }
+    }
+}
+
+function unlockAxisHighlight() {
+    if (!axisHighlightLock) return;
+    const { cache, restoreMaterial, previousActive } = axisHighlightLock;
+    axisHighlightLock = null;
+    if (!cache?.gizmoMeshes?.length || !restoreMaterial) return;
+    cache.active = previousActive;
+    const material = cache.dragBehavior?.enabled ? restoreMaterial : cache.disableMaterial || restoreMaterial;
+    for (const mesh of cache.gizmoMeshes) {
+        if (mesh?.isDisposed?.()) continue;
+        mesh.material = material;
+        if (mesh.color && material.diffuseColor) {
+            mesh.color = material.diffuseColor;
+        }
+    }
+}
+
 function getGizmoScreenAxisHit(event) {
     const mode = getActiveTransformMode();
     if (!["translate", "scale"].includes(mode)) return null;
@@ -2409,6 +2476,10 @@ function beginAxisTransform(event, axisHit) {
     const origin = node.getAbsolutePosition?.() || node.position.clone();
     const axisWorld = getTransformAxisWorld(node, axisHit.axis);
     const axisDistance = getAxisPointerDistance(event, origin, axisWorld);
+    const axisDragPlaneNormal = getAxisDragPlaneNormal(axisWorld);
+    const axisDragStartPoint = axisDragPlaneNormal
+        ? intersectRayPlane(getPickingRay(event), origin, axisDragPlaneNormal)
+        : null;
     const centerScreen = projectWorldToCanvas(origin);
     const startPointer = getCanvasPoint(event);
     const startAngle = Math.atan2(startPointer.y - centerScreen.y, startPointer.x - centerScreen.x);
@@ -2419,6 +2490,8 @@ function beginAxisTransform(event, axisHit) {
         node,
         origin,
         axisWorld,
+        axisDragPlaneNormal,
+        axisDragStartPoint,
         axisScreen: getAxisScreenDirection(origin, axisWorld),
         centerScreen,
         startPointer,
@@ -2434,6 +2507,7 @@ function beginAxisTransform(event, axisHit) {
     cameraDrag = null;
     transformDragging = true;
     pendingTransformChange = false;
+    lockAxisHighlight(axisHit.mode, axisHit.axis);
     setCameraControlEnabled(false);
     return true;
 }
@@ -2456,17 +2530,18 @@ function updateAxisTransform(event) {
     else updateAxisTranslation(event);
     axisTransform.moved = true;
     pendingTransformChange = true;
+    applyAxisHighlightLock();
     syncSelectedObjectsFromBabylon(false);
-    updateSelectionHelpers();
 }
 
 function updateAxisTranslation(event) {
     const state = axisTransform;
-    const distance = getAxisPointerDistance(event, state.origin, state.axisWorld);
-    const useScreenFallback = distance === null || state.startAxisDistance === null;
-    const delta = useScreenFallback
-        ? getAxisScreenDelta(event, state) * getScreenWorldStep(state.origin)
-        : distance - state.startAxisDistance;
+    const dragPoint = state.axisDragPlaneNormal
+        ? intersectRayPlane(getPickingRay(event), state.origin, state.axisDragPlaneNormal)
+        : null;
+    const delta = dragPoint && state.axisDragStartPoint
+        ? BABYLON.Vector3.Dot(dragPoint.subtract(state.axisDragStartPoint), state.axisWorld)
+        : getAxisScreenDelta(event, state) * getScreenWorldStep(state.origin);
     const nextAbsolutePosition = state.startAbsolutePosition.add(state.axisWorld.scale(delta));
     setNodeAbsolutePosition(state.node, nextAbsolutePosition);
 }
@@ -2495,6 +2570,7 @@ function updateAxisScale(event) {
 function finishAxisTransform() {
     const shouldEmit = axisTransform?.moved;
     axisTransform = null;
+    unlockAxisHighlight();
     cameraDrag = null;
     transformDragging = false;
     setCameraControlEnabled(true);
@@ -2525,6 +2601,15 @@ function getAxisPointerDistance(event, origin, axisWorld) {
     const lineDot = BABYLON.Vector3.Dot(lineDirection, between);
     const rayDot = BABYLON.Vector3.Dot(rayDirection, between);
     return (dot * rayDot - lineDot) / denominator;
+}
+
+function getAxisDragPlaneNormal(axisWorld) {
+    if (!camera || !axisWorld) return null;
+    const forward = camera.getForwardRay().direction.normalize();
+    const axis = axisWorld.normalize();
+    const normal = forward.subtract(axis.scale(BABYLON.Vector3.Dot(forward, axis)));
+    if (normal.lengthSquared() < 0.000001) return null;
+    return normal.normalize();
 }
 
 function getAxisScreenDelta(event, state) {

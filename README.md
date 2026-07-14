@@ -2,9 +2,12 @@
 
 `het3d` 是一个基于 Vue 3 和 Three.js 的 3D 场景组件。它只提供 npm 包运行所需的能力：3D 画布、场景渲染、编辑态对象操作、预览态事件执行、模型加载、数据绑定和运行时 API。
 
+当前已更新为babylonjs，优化大模型导入卡顿问题
+
 本包不包含登录页、路由、业务接口、demo 页面、内置资源库和项目应用壳。宿主项目需要自己提供场景数据、模型 URL、请求方法和业务弹窗。
 
 源码地址：[het3d](https://github.com/Het8023/het3d)
+示例代码地址：[het3d_edit](https://github.com/Het8023/het3d_edit)
 
 ## 安装
 
@@ -627,16 +630,16 @@ const sceneData = {
 
 `httpsConfig` 字段：
 
-| 字段              | 类型               | 说明                                                                           |
-| ----------------- | ------------------ | ------------------------------------------------------------------------------ |
-| `enabled`         | `boolean`          | 是否启用轮询。                                                                 |
-| `method`          | `"GET" \| "POST"`  | 只支持 `GET` 和 `POST`，其他值会按 `GET` 处理。                                |
-| `url`             | `string`           | 请求地址，可以是相对地址或完整 URL。                                           |
-| `headers`         | `string \| object` | JSON 对象。请求头只来自该配置，不会默认添加 token 或业务请求头。               |
-| `query`           | `string \| object` | JSON 对象。非空时会拼到 URL 查询参数中，`GET` / `POST` 都生效。                |
-| `body`            | `string \| object` | JSON 值。非空且为 `POST` 时才作为请求体发送；请求头需要自行配置。              |
-| `processor`       | `string`           | 响应处理函数源码，必须返回 `{ dataId, value }[]`。                             |
-| `intervalSeconds` | `number`           | 轮询间隔秒数，最小为 1。                                                       |
+| 字段              | 类型               | 说明                                                              |
+| ----------------- | ------------------ | ----------------------------------------------------------------- |
+| `enabled`         | `boolean`          | 是否启用轮询。                                                    |
+| `method`          | `"GET" \| "POST"`  | 只支持 `GET` 和 `POST`，其他值会按 `GET` 处理。                   |
+| `url`             | `string`           | 请求地址，可以是相对地址或完整 URL。                              |
+| `headers`         | `string \| object` | JSON 对象。请求头只来自该配置，不会默认添加 token 或业务请求头。  |
+| `query`           | `string \| object` | JSON 对象。非空时会拼到 URL 查询参数中，`GET` / `POST` 都生效。   |
+| `body`            | `string \| object` | JSON 值。非空且为 `POST` 时才作为请求体发送；请求头需要自行配置。 |
+| `processor`       | `string`           | 响应处理函数源码，必须返回 `{ dataId, value }[]`。                |
+| `intervalSeconds` | `number`           | 轮询间隔秒数，最小为 1。                                          |
 
 `GET` 请求示例：
 
@@ -807,7 +810,7 @@ processor: `(response) => {
 
 | 问题             | 处理方式                                                          |
 | ---------------- | ----------------------------------------------------------------- |
-| 需要传 headers   | 写在 `httpsConfig.headers`，或通过自定义 `requestHandler` 处理。 |
+| 需要传 headers   | 写在 `httpsConfig.headers`，或通过自定义 `requestHandler` 处理。  |
 | `query` 解析失败 | `query` 必须是 JSON 对象，不支持数组作为根值。                    |
 | 轮询没有执行     | 确认 `mode="view"`、`enabled=true`、`url` 非空。                  |
 | 场景值没更新     | 确认 `processor` 返回数组，且 `dataId` 等于 `dataBindings[].id`。 |
@@ -1129,22 +1132,22 @@ window.het3d.on("modelExplode", {
 | `objectId` / `targetId` / `id` | 触发展开的对象 ID；未传 `explodeConfig` 时会从该对象事件中查找配置。 |
 | `objectData` / `object`        | 直接传入对象数据，用于辅助解析当前事件和目标。                       |
 | `eventId`                      | 指定要使用的模型展开事件 ID。                                        |
-| `triggerType`                  | 触发方式，例如 `manual`、`leftClick`、`leftDoubleClick`。             |
-| `explodeConfig`                | 展开配置；未传时使用目标对象上第一个 `modelExplode` 事件配置。        |
-| `event`                        | 直接传入事件对象，优先用于读取 `explodeConfig`。                      |
+| `triggerType`                  | 触发方式，例如 `manual`、`leftClick`、`leftDoubleClick`。            |
+| `explodeConfig`                | 展开配置；未传时使用目标对象上第一个 `modelExplode` 事件配置。       |
+| `event`                        | 直接传入事件对象，优先用于读取 `explodeConfig`。                     |
 
 `explodeConfig` 字段：
 
-| 字段        | 说明                                                                 |
-| ----------- | -------------------------------------------------------------------- |
-| `targetIds` | 逗号分隔的目标对象 ID；为空时默认当前触发对象。                      |
+| 字段        | 说明                                                                       |
+| ----------- | -------------------------------------------------------------------------- |
+| `targetIds` | 逗号分隔的目标对象 ID；为空时默认当前触发对象。                            |
 | `targets`   | 高级目标列表，每项可包含 `objectId` / `id`、`fromPosition`、`toPosition`。 |
-| `direction` | 展开方向：`up`、`down`、`both`、`custom`。                            |
-| `spacing`   | 自动展开间距。                                                       |
-| `offset`    | `custom` 方向下的 XYZ 偏移，多个图层会按顺序逐层叠加。                |
-| `duration`  | 动画时长，单位毫秒；默认 `800`。                                      |
-| `easing`    | 当前使用匀速移动，值为 `linear`。                                     |
-| `toggle`    | `true` 时再次触发会按原动画收起；`false` 时只展开。                   |
+| `direction` | 展开方向：`up`、`down`、`both`、`custom`。                                 |
+| `spacing`   | 自动展开间距。                                                             |
+| `offset`    | `custom` 方向下的 XYZ 偏移，多个图层会按顺序逐层叠加。                     |
+| `duration`  | 动画时长，单位毫秒；默认 `800`。                                           |
+| `easing`    | 当前使用匀速移动，值为 `linear`。                                          |
+| `toggle`    | `true` 时再次触发会按原动画收起；`false` 时只展开。                        |
 
 ### 目标解析和动画规则
 
