@@ -7,6 +7,7 @@
 本包不包含登录页、路由、业务接口、demo 页面、内置资源库和项目应用壳。宿主项目需要自己提供场景数据、模型 URL、请求方法和业务弹窗。
 
 源码地址：[het3d](https://github.com/Het8023/het3d)
+演示项目地址：[het3d](https://het8023.github.io/het3d_edit_preview/)
 示例代码地址：[het3d_edit](https://github.com/Het8023/het3d_edit)
 
 ## 安装
