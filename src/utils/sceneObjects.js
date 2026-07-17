@@ -1,3 +1,10 @@
+import {
+    defaultAnimationSettings,
+    normalizeAnimationSettings,
+    normalizeBuiltInAnimations,
+    normalizeCustomAnimations,
+} from "./sceneAnimations.js";
+
 export function createId(prefix = "id") {
     return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -383,7 +390,8 @@ export function createSceneObject(type, options = {}) {
         source,
         dataBindings: normalizeDataBindings(options.dataBindings, options.dataIds),
         events: Array.isArray(options.events) ? options.events : [],
-        animations: Array.isArray(options.animations) ? options.animations : [],
+        animations: normalizeCustomAnimations(options.animations),
+        builtInAnimations: normalizeBuiltInAnimations(options.builtInAnimations),
         metadata: options.metadata || null,
         visible: options.visible ?? true,
         locked: options.locked ?? false,
@@ -411,6 +419,7 @@ export function createDefaultScene(projectId, sceneId = createId("scene")) {
         camera: defaultCamera(),
         canvas: defaultCanvas(),
         lights: defaultLights(),
+        animationSettings: defaultAnimationSettings(),
         httpsConfig: defaultHttpsConfig(),
         editorState: {
             selectedIds: [],
@@ -430,6 +439,7 @@ export function normalizeScene(scene) {
     next.camera.target = next.camera.target || defaultCamera().target;
     next.canvas = { ...defaultCanvas(), ...(next.canvas || {}) };
     next.lights = normalizeLights(next.lights);
+    next.animationSettings = normalizeAnimationSettings(next.animationSettings);
     next.httpsConfig = { ...defaultHttpsConfig(), ...(next.httpsConfig || {}) };
     next.httpsConfig.method = ["GET", "POST"].includes(
         String(next.httpsConfig.method).toUpperCase(),
@@ -505,7 +515,8 @@ function normalizeModelNode(model) {
         },
         dataBindings: normalizeDataBindings(model.dataBindings, model.dataIds),
         events: Array.isArray(model.events) ? model.events : [],
-        animations: Array.isArray(model.animations) ? model.animations : [],
+        animations: normalizeCustomAnimations(model.animations),
+        builtInAnimations: normalizeBuiltInAnimations(model.builtInAnimations),
         metadata: model.metadata || null,
         visible: model.visible ?? true,
         locked: model.locked ?? false,

@@ -1,6 +1,6 @@
 {
     "name": "het3d",
-    "version": "0.2.3",
+    "version": "0.3.0",
     "description": "A Vue 3 and Babylon.js based 3D scene editor/viewer component.",
     "type": "module",
     "main": "./dist/het3d.umd.cjs",

@@ -43,12 +43,16 @@ import {
     updateModelById,
 } from "../utils/sceneObjects";
 import { createHet3dApi } from "../utils/het3dApi";
+import { createAnimationRuntime } from "./animationRuntime.js";
+import { createModelExplodeRuntime } from "./modelExplodeRuntime.js";
+import { createModelImportRuntime } from "./modelImportRuntime.js";
+import { createSceneDataPolling } from "./sceneDataPolling.js";
+import { createSceneVisuals } from "./sceneVisuals.js";
 import {
-    applyProcessedDataToSceneBindings,
-    normalizeHttpsConfigData,
-    parseHttpsJsonText,
-    runHttpsResponseProcessor,
-} from "../utils/httpsSceneData";
+    createObjectEventRuntime,
+    isExecutableObjectEvent,
+    sanitizeSceneEventPayload,
+} from "./objectEventRuntime.js";
 import { het3dEventBus } from "../utils/eventBus";
 
 defineOptions({
@@ -78,6 +82,10 @@ const emit = defineEmits([
     "scene-change",
     "thumbnail-ready",
     "device-popover",
+    "animation-catalog-ready",
+    "animation-state-change",
+    "animation-finish",
+    "animation-error",
     "message",
 ]);
 
@@ -112,14 +120,6 @@ let transformDragging = false;
 let pendingTransformChange = false;
 let previousHet3dDescriptor = null;
 let hasPreviousHet3dDescriptor = false;
-let httpsPollingTimer = null;
-let httpsPollingSignature = "";
-let httpsRequestRunning = false;
-let initialValueChangeEventsExecuted = false;
-let objectEventTriggerStack = [];
-let floatingDevicePopoverOpenedDuringClickEvent = false;
-let previewAnimationStartedAt = 0;
-let sceneBuiltInDevicePopoverAnchorId = "";
 let copiedSceneObjects = [];
 let pasteSerial = 0;
 
@@ -128,21 +128,149 @@ const selectionPickMap = new Map();
 const selectionHelpers = [];
 const assetSceneCache = new Map();
 const gizmoObserverDisposers = [];
-const activeModelExplodeAnimations = new Map();
-const modelExplodeStates = new Map();
 const maxSelectionHelpers = 80;
 const selectionHelperColor = BABYLON.Color3.FromHexString("#ffc400");
+
+const sceneVisuals = createSceneVisuals({ getScene: () => scene });
+const {
+    createStandardMaterial,
+    createIconMaterial,
+    createLabelMaterial,
+    setSceneObjectMetadata,
+    applyTransform,
+    toVector3,
+    vectorToData,
+    getNodeRotation,
+} = sceneVisuals;
+
+const animationRuntime = createAnimationRuntime({
+    getMode: () => props.mode,
+    getSceneState: () => sceneState,
+    getObjectData: (objectId) => getObjectData(objectId),
+    getObjectNode: (objectId) => objectMap.get(objectId) || null,
+    getAllObjects: () => flattenModels(sceneState?.models || []),
+    emit: emitAnimationRuntimeEvent,
+    notify: (type, message) => notifyMessage(type, message),
+});
+
+const modelImportRuntime = createModelImportRuntime({
+    getScene: () => scene,
+    getSceneState: () => sceneState,
+    getAssetLoader: () => props.assetLoader,
+    objectMap,
+    selectionPickMap,
+    assetSceneCache,
+    animationRuntime,
+    setSceneObjectMetadata,
+    applyTransform,
+    toVector3,
+    vectorToData,
+    getNodeRotation,
+    getNodeBounds,
+    isBoundsEmpty,
+    getBoundsSize: boundsSize,
+    getBoundsCenter: boundsCenter,
+    worldToLocal,
+    round,
+});
+const {
+    getObjectModelPath,
+    readBlobAsDataUrl,
+    createImportedModel,
+    importModelRuntime,
+    disposeAnimationGroups,
+    createCachedModelMetadata,
+    getNodeMeshes,
+    createLayerObjectData,
+    removeLayerMeshObjects,
+    getOriginOffsetForObject,
+    shouldApplyMaterialColor,
+    applyMaterialColorToObject,
+    migrateImportedMeshesToLayers,
+} = modelImportRuntime;
+
+const modelExplodeRuntime = createModelExplodeRuntime({
+    getMode: () => props.mode,
+    getSceneState: () => sceneState,
+    getObjectData,
+    getObjectNode: (objectId) => objectMap.get(objectId) || null,
+    getNodeBounds,
+    isBoundsEmpty,
+    getBoundsSize: boundsSize,
+    toVector3,
+    vectorToData,
+    refreshImportedModelSelectionProxy,
+    updateSelectionHelpers,
+    sanitizeEventPayload: (payload) => sanitizeSceneEventPayload(payload, vectorToData),
+    emitEvent: emitCanvasEvent,
+    onSceneChange: emitSceneChange,
+});
+const explodeModel = modelExplodeRuntime.explodeModel;
+
+const objectEventRuntime = createObjectEventRuntime({
+    BABYLON,
+    animationRuntime,
+    explodeModel,
+    getSceneState: () => sceneState,
+    getObjectData,
+    getObjectNode: (objectId) => objectMap.get(objectId) || null,
+    getScene: () => scene,
+    getCamera: () => camera,
+    getControls: () => controls,
+    getHet3dApi: () => canvasHet3dApi,
+    getHostElement: () => hostRef.value,
+    getFloatingDevicePopover: () => devicePopoverRef.value,
+    getBuiltInDevicePopover: () => sceneBuiltInDevicePopoverRef.value,
+    hasDevicePopoverComponent: () => Boolean(resolvedDevicePopoverComponent.value),
+    getObjectScreenAnchor,
+    vectorToData,
+    emitDevicePopover: (payload) => emit("device-popover", payload),
+    notify: notifyMessage,
+});
+const {
+    runObjectEvents,
+    showPublicDevicePopover,
+    updateBuiltInDevicePopoverAnchor: updateSceneBuiltInDevicePopoverAnchor,
+    beginViewClick,
+    consumeFloatingPopoverOpened,
+    hideFloatingDevicePopover,
+    hideAllDevicePopovers,
+    handleBuiltInDevicePopoverClose: handleSceneBuiltInDevicePopoverClose,
+    isTriggerRunning: isObjectEventTriggerRunning,
+} = objectEventRuntime;
+
+const sceneDataPolling = createSceneDataPolling({
+    getMode: () => props.mode,
+    getSceneState: () => sceneState,
+    getRequestHandler: () => props.requestHandler,
+    getObjectData,
+    runObjectEvents,
+    isExecutableObjectEvent,
+    isObjectEventTriggerRunning,
+    onSceneChange: emitSceneChange,
+});
 
 const canvasHet3dApi = createHet3dApi({
     getSceneData: () => sceneState,
     getPublicSceneData: getCanvasPublicSceneData,
     getActiveObjects: getCanvasActiveObjects,
     updateObject: updateSceneObject,
-    onChange: handleHet3dValueChange,
-    getSetValueOptions: getCanvasHet3dSetValueOptions,
+    onChange: sceneDataPolling.handleValueChange,
+    getSetValueOptions: sceneDataPolling.getSetValueOptions,
     extra: {
         showDevicePopover: showPublicDevicePopover,
         explodeModel,
+        getAnimationCatalog: animationRuntime.getAnimationCatalog,
+        playObjectAnimations: animationRuntime.playObjectAnimations,
+        playAnimation: animationRuntime.playAnimation,
+        pauseAnimation: animationRuntime.pauseAnimation,
+        resumeAnimation: animationRuntime.resumeAnimation,
+        stopAnimation: animationRuntime.stopAnimation,
+        restartAnimation: animationRuntime.restartAnimation,
+        seekAnimation: animationRuntime.seekAnimation,
+        getAnimationState: animationRuntime.getAnimationState,
+        stopAllAnimations: animationRuntime.stopAllAnimations,
+        applyAnimationSettings: animationRuntime.applyAnimationSettings,
         on: onCanvasEvent,
         off: offCanvasEvent,
         once: onceCanvasEvent,
@@ -153,12 +281,15 @@ const canvasHet3dApi = createHet3dApi({
 onMounted(async () => {
     initBabylon();
     installCanvasHet3dGlobal();
+    document.addEventListener("visibilitychange", handleDocumentVisibilityChange);
     await loadInitialScene();
 });
 
 onBeforeUnmount(() => {
     restoreCanvasHet3dGlobal();
-    clearCanvasHttpsPolling();
+    document.removeEventListener("visibilitychange", handleDocumentVisibilityChange);
+    animationRuntime.clear({ disposeGroups: true });
+    sceneDataPolling.clear();
     cancelAnimationFrame(rangeUpdateFrameId);
     resizeObserver?.disconnect();
     canvas?.removeEventListener("pointerdown", handlePointerDown);
@@ -255,8 +386,8 @@ function initBabylon() {
     resizeObserver.observe(hostRef.value);
 
     engine.runRenderLoop(() => {
-        updatePreviewAnimations();
-        updateModelExplodeAnimations();
+        animationRuntime.update();
+        modelExplodeRuntime.update();
         updateSceneBuiltInDevicePopoverAnchor();
         scene.render();
     });
@@ -294,11 +425,10 @@ async function loadProjectScene(projectId) {
 
 async function loadSceneData(data) {
     loading.value = true;
+    animationRuntime.clear({ disposeGroups: true });
     sceneState = normalizeScene(data);
-    initialValueChangeEventsExecuted = false;
-    activeModelExplodeAnimations.clear();
-    modelExplodeStates.clear();
-    resetPreviewAnimationRuntime();
+    sceneDataPolling.reset();
+    modelExplodeRuntime.reset();
     hideAllDevicePopovers();
 
     const migratedToLayers = await migrateImportedMeshesToLayers(sceneState);
@@ -323,8 +453,9 @@ async function loadSceneData(data) {
     updateGridToScene();
     applySelection(props.selectedIds || sceneState.editorState?.selectedIds || [], false);
     loading.value = false;
-    restartCanvasHttpsPolling({ immediate: props.mode === "view" });
+    sceneDataPolling.restart({ immediate: props.mode === "view" });
     emit("scene-ready", { scene: normalizeSceneModelSources(sceneState) });
+    animationRuntime.startAutoPlay();
     if (migratedToLayers) emitSceneChange();
 }
 
@@ -378,580 +509,6 @@ async function createBabylonObject(objectData) {
         });
     }
     return node;
-}
-
-function createStandardMaterial(color, doubleSide = false) {
-    const material = new BABYLON.StandardMaterial(`mat_${createId("m")}`, scene);
-    material.diffuseColor = BABYLON.Color3.FromHexString(color);
-    material.specularColor = new BABYLON.Color3(0.12, 0.12, 0.12);
-    material.backFaceCulling = !doubleSide;
-    return material;
-}
-
-function createIconMaterial(symbol, color, shape = "circle") {
-    const texture = createSymbolTexture(symbol, color, shape);
-    const material = new BABYLON.StandardMaterial(`icon_${createId("m")}`, scene);
-    material.diffuseTexture = texture;
-    material.opacityTexture = texture;
-    material.useAlphaFromDiffuseTexture = true;
-    material.diffuseTexture.hasAlpha = true;
-    material.specularColor = BABYLON.Color3.Black();
-    material.backFaceCulling = false;
-    return material;
-}
-
-function createLabelMaterial(label, color) {
-    const texture = createLabelTexture(label, color);
-    const material = new BABYLON.StandardMaterial(`label_${createId("m")}`, scene);
-    material.diffuseTexture = texture;
-    material.specularColor = BABYLON.Color3.Black();
-    material.backFaceCulling = false;
-    return material;
-}
-
-function createSymbolTexture(symbol, color, shape = "circle") {
-    const texture = new BABYLON.DynamicTexture(`symbol_${createId("t")}`, { width: 512, height: 512 }, scene, false);
-    const context = texture.getContext();
-    context.clearRect(0, 0, 512, 512);
-    context.fillStyle = color;
-    drawIconShape(context, shape);
-    const text = String(symbol || "*").trim() || "*";
-    const fontFamily = 'Arial, "Microsoft YaHei", sans-serif';
-    let fontSize = 150;
-    context.fillStyle = "#ffffff";
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    while (fontSize > 42) {
-        context.font = `700 ${fontSize}px ${fontFamily}`;
-        const metrics = context.measureText(text);
-        if (metrics.width <= 330 && fontSize <= 180) break;
-        fontSize -= 6;
-    }
-    context.font = `700 ${fontSize}px ${fontFamily}`;
-    context.fillText(text, 256, 258);
-    texture.update();
-    texture.hasAlpha = true;
-    return texture;
-}
-
-function drawIconShape(context, shape) {
-    context.beginPath();
-    if (shape === "square") {
-        context.rect(96, 96, 320, 320);
-    } else if (shape === "rounded") {
-        drawRoundedRect(context, 78, 96, 356, 320, 70);
-    } else if (shape === "diamond") {
-        context.moveTo(256, 64);
-        context.lineTo(448, 256);
-        context.lineTo(256, 448);
-        context.lineTo(64, 256);
-        context.closePath();
-    } else {
-        context.arc(256, 256, 190, 0, Math.PI * 2);
-    }
-    context.fill();
-}
-
-function drawRoundedRect(context, x, y, width, height, radius) {
-    const right = x + width;
-    const bottom = y + height;
-    context.moveTo(x + radius, y);
-    context.lineTo(right - radius, y);
-    context.quadraticCurveTo(right, y, right, y + radius);
-    context.lineTo(right, bottom - radius);
-    context.quadraticCurveTo(right, bottom, right - radius, bottom);
-    context.lineTo(x + radius, bottom);
-    context.quadraticCurveTo(x, bottom, x, bottom - radius);
-    context.lineTo(x, y + radius);
-    context.quadraticCurveTo(x, y, x + radius, y);
-    context.closePath();
-}
-
-function createLabelTexture(label, color) {
-    const texture = new BABYLON.DynamicTexture(`label_${createId("t")}`, { width: 512, height: 320 }, scene, false);
-    const context = texture.getContext();
-    context.fillStyle = color;
-    context.fillRect(0, 0, 512, 320);
-    context.fillStyle = "rgba(255,255,255,0.18)";
-    for (let x = 0; x < 512; x += 32) context.fillRect(x, 0, 1, 320);
-    for (let y = 0; y < 320; y += 32) context.fillRect(0, y, 512, 1);
-    context.fillStyle = "#ffffff";
-    context.font = "bold 38px Arial";
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.fillText(String(label || "").slice(0, 12), 256, 160);
-    texture.update();
-    return texture;
-}
-
-function setSceneObjectMetadata(node, objectId) {
-    node.metadata = {
-        ...(node.metadata || {}),
-        sceneObjectId: objectId,
-    };
-}
-
-function applyTransform(node, objectData) {
-    node.position = toVector3(objectData.position, { x: 0, y: 0, z: 0 });
-    node.rotationQuaternion = null;
-    node.rotation = toVector3(objectData.rotation, { x: 0, y: 0, z: 0 });
-    node.scaling = toVector3(objectData.scale, { x: 1, y: 1, z: 1 });
-}
-
-function toVector3(value, fallback) {
-    return new BABYLON.Vector3(
-        Number.isFinite(Number(value?.x)) ? Number(value.x) : fallback.x,
-        Number.isFinite(Number(value?.y)) ? Number(value.y) : fallback.y,
-        Number.isFinite(Number(value?.z)) ? Number(value.z) : fallback.z,
-    );
-}
-
-function vectorToData(vector) {
-    return {
-        x: round(vector?.x || 0),
-        y: round(vector?.y || 0),
-        z: round(vector?.z || 0),
-    };
-}
-
-function getNodeRotation(node) {
-    return node.rotationQuaternion ? node.rotationQuaternion.toEulerAngles() : node.rotation;
-}
-
-function getObjectModelPath(objectData, visited = new Set()) {
-    if (!objectData) return "";
-    const ownModelPath =
-        objectData?.modelPath ||
-        objectData?.source?.modelPath ||
-        objectData?.source?.sourceUrl ||
-        objectData?.metadata?.sourceUrl ||
-        "";
-    if (ownModelPath) return ownModelPath;
-    if (!objectData.parentId || visited.has(objectData.id)) return "";
-    visited.add(objectData.id);
-    const parent = findModelById(sceneState?.models || [], objectData.parentId);
-    return getObjectModelPath(parent, visited);
-}
-
-function readBlobAsDataUrl(blob) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = () => reject(reader.error || new Error("File read failed"));
-        reader.readAsDataURL(blob);
-    });
-}
-
-function getObjectModelReference(objectData) {
-    const modelPath = getObjectModelPath(objectData);
-    if (modelPath) return { modelPath };
-    return objectData?.assetId ? { assetId: objectData.assetId } : {};
-}
-
-function applyModelReferenceToObjectData(objectData, modelReference, { keepModelPath = false } = {}) {
-    if (!objectData || !modelReference) return;
-    if (keepModelPath && modelReference.modelPath) {
-        objectData.modelPath = modelReference.modelPath;
-        delete objectData.assetId;
-    } else if (keepModelPath && modelReference.assetId) {
-        objectData.assetId = modelReference.assetId;
-        delete objectData.modelPath;
-    } else {
-        delete objectData.modelPath;
-        delete objectData.assetId;
-    }
-    if (objectData.source) {
-        objectData.source = { ...objectData.source };
-        delete objectData.source.modelPath;
-        delete objectData.source.sourceUrl;
-    }
-}
-
-async function getCachedModelMetadataForObject(objectData) {
-    const modelPath = getObjectModelPath(objectData);
-    if (modelPath) {
-        return getCachedModelMetadata({ key: `path:${modelPath}`, url: modelPath });
-    }
-    if (!objectData?.assetId || !props.assetLoader) return null;
-    const asset = await props.assetLoader(objectData.assetId);
-    let assetPath = asset?.modelPath || asset?.sourceUrl || asset?.metadata?.sourceUrl || "";
-    if (!assetPath && asset?.blob) assetPath = await readBlobAsDataUrl(asset.blob);
-    if (!assetPath) return null;
-    applyModelReferenceToObjectData(objectData, { modelPath: assetPath }, {
-        keepModelPath: objectData.type === "importedModel",
-    });
-    return getCachedModelMetadata({ key: `path:${assetPath}`, url: assetPath });
-}
-
-async function getCachedModelMetadata({ key, url }) {
-    if (!key || !url) return null;
-    if (assetSceneCache.has(key)) return assetSceneCache.get(key);
-    const runtime = await importModelRuntime(url, { enabled: false });
-    const metadata = createCachedModelMetadata(runtime.content, runtime.meshes);
-    runtime.root.dispose(false, true);
-    assetSceneCache.set(key, metadata);
-    return metadata;
-}
-
-async function createImportedModel(objectData) {
-    const modelPath = getObjectModelPath(objectData);
-    if (!modelPath && !objectData?.assetId) return new BABYLON.TransformNode("emptyModel", scene);
-    if (!modelPath && objectData.assetId) await getCachedModelMetadataForObject(objectData);
-    const source = getObjectModelPath(objectData);
-    if (!source) return new BABYLON.TransformNode("emptyModel", scene);
-
-    const runtime = await importModelRuntime(source);
-    const modelRoot = runtime.root;
-    const modelContent = runtime.content;
-    const originOffset = getModelOriginOffset(objectData, modelContent);
-    modelContent.position = toVector3(originOffset, { x: 0, y: 0, z: 0 });
-
-    const layerObjects = (objectData.children || []).filter((object) => object.type === "importedLayer");
-    const metadata = createCachedModelMetadata(modelContent, runtime.meshes);
-    if (layerObjects.length) {
-        mapImportedLayersToModel(modelContent, runtime.meshes, metadata.layerEntries, layerObjects);
-    } else {
-        mapLegacyMeshesToModel(runtime.meshes, objectData.children || []);
-    }
-    if (shouldApplyMaterialColor(objectData)) {
-        applyMaterialColorToObject(modelRoot, objectData.material?.color);
-    }
-    optimizeImportedModelRuntime(modelRoot);
-    addImportedModelSelectionProxy(modelRoot, modelContent, objectData.id);
-    return modelRoot;
-}
-
-async function importModelRuntime(source, { enabled = true } = {}) {
-    const result = await BABYLON.ImportMeshAsync(source, scene);
-    const nodes = uniqueNodes([...result.meshes, ...(result.transformNodes || [])]);
-    const nodeSet = new Set(nodes);
-    const root = new BABYLON.TransformNode(`imported_${createId("root")}`, scene);
-    const content = new BABYLON.TransformNode("modelContent", scene);
-    content.parent = root;
-    nodes
-        .filter((node) => !node.parent || !nodeSet.has(node.parent))
-        .forEach((node) => {
-            node.parent = content;
-        });
-    root.setEnabled(enabled);
-    return {
-        root,
-        content,
-        meshes: result.meshes.filter((mesh) => mesh instanceof BABYLON.AbstractMesh),
-        animationGroups: result.animationGroups || [],
-    };
-}
-
-function uniqueNodes(nodes) {
-    return Array.from(new Set(nodes.filter(Boolean)));
-}
-
-function createCachedModelMetadata(root, meshes = collectMeshes(root)) {
-    const layerEntries = collectModelLayers(root, meshes);
-    markImportedModelSourceIndices(meshes, layerEntries);
-    return { meshes, layerEntries };
-}
-
-function markImportedModelSourceIndices(meshes, layerEntries) {
-    meshes.forEach((mesh, meshIndex) => {
-        mesh.metadata = { ...(mesh.metadata || {}), importedMeshIndex: meshIndex };
-    });
-    layerEntries.forEach((entry) => {
-        entry.node.metadata = { ...(entry.node.metadata || {}), importedLayerIndex: entry.layerIndex };
-    });
-}
-
-function mapImportedLayersToModel(modelRoot, meshes, layerEntries, layerObjects) {
-    const meshBySourceIndex = createMeshBySourceIndex(meshes);
-    const childByLayerIndex = new Map(layerObjects.map((object) => [object.source?.layerIndex, object]));
-    layerEntries.forEach((entry) => {
-        const layerData = childByLayerIndex.get(entry.layerIndex);
-        if (!layerData) {
-            entry.node.setEnabled(false);
-            return;
-        }
-        entry.node.name = layerData.name;
-        setSceneObjectMetadata(entry.node, layerData.id);
-        entry.node.metadata.het3dLayerRoot = true;
-        applyTransform(entry.node, layerData);
-        entry.node.setEnabled(layerData.visible !== false);
-        objectMap.set(layerData.id, entry.node);
-
-        const meshIndices = Array.isArray(layerData.source?.meshIndices)
-            ? layerData.source.meshIndices
-            : entry.meshIndices;
-        meshIndices.forEach((meshIndex) => {
-            const mesh = meshBySourceIndex.get(meshIndex);
-            if (!mesh) return;
-            setSceneObjectMetadata(mesh, layerData.id);
-        });
-        if (shouldApplyMaterialColor(layerData)) {
-            applyMaterialColorToObject(entry.node, layerData.material?.color);
-        }
-    });
-}
-
-function createMeshBySourceIndex(meshes) {
-    return new Map(
-        meshes.map((mesh, index) => {
-            const sourceIndex = Number(mesh.metadata?.importedMeshIndex);
-            return [Number.isFinite(sourceIndex) ? sourceIndex : index, mesh];
-        }),
-    );
-}
-
-function optimizeImportedModelRuntime(modelRoot) {
-    getNodeMeshes(modelRoot).forEach((mesh) => {
-        if (mesh.metadata?.selectionProxy) return;
-        mesh.isPickable = false;
-    });
-}
-
-function addImportedModelSelectionProxy(modelRoot, modelContent, objectId) {
-    const bounds = getNodeBounds(modelContent);
-    if (isBoundsEmpty(bounds)) return;
-    const size = boundsSize(bounds);
-    const center = boundsCenter(bounds);
-    const proxy = BABYLON.MeshBuilder.CreateBox(
-        `${modelRoot.name || "importedModel"}_selectionProxy`,
-        { width: Math.max(size.x, 0.001), height: Math.max(size.y, 0.001), depth: Math.max(size.z, 0.001) },
-        scene,
-    );
-    const material = new BABYLON.StandardMaterial(`proxy_${createId("m")}`, scene);
-    material.alpha = 0;
-    material.disableLighting = true;
-    proxy.material = material;
-    proxy.visibility = 0;
-    proxy.parent = modelRoot;
-    proxy.position = worldToLocal(modelRoot, center);
-    proxy.isPickable = true;
-    proxy.metadata = { sceneObjectId: objectId, selectionProxy: true };
-    selectionPickMap.set(objectId, proxy);
-}
-
-function mapLegacyMeshesToModel(meshes, childObjects) {
-    const childByMeshIndex = new Map(childObjects.map((object) => [object.source?.meshIndex, object]));
-    meshes.forEach((mesh, meshIndex) => {
-        const childData = childByMeshIndex.get(meshIndex);
-        if (!childData) {
-            mesh.setEnabled(false);
-            return;
-        }
-        mesh.name = childData.name;
-        setSceneObjectMetadata(mesh, childData.id);
-        objectMap.set(childData.id, mesh);
-        mesh.setEnabled(childData.visible !== false);
-        applyTransform(mesh, childData);
-        applyMaterialColor(mesh, childData.material?.color);
-    });
-}
-
-function collectMeshes(root) {
-    return getNodeMeshes(root).filter((mesh) => !mesh.metadata?.selectionProxy);
-}
-
-function getNodeMeshes(node) {
-    if (!node) return [];
-    const meshes = node instanceof BABYLON.AbstractMesh ? [node] : [];
-    return meshes.concat(node.getChildMeshes?.(false) || []);
-}
-
-function collectModelLayers(root, meshes = collectMeshes(root)) {
-    const meshIndexByNode = new Map(meshes.map((mesh, index) => [mesh, index]));
-    return getLayerCandidates(root)
-        .map((node, layerIndex) => {
-            const meshIndices = [];
-            getNodeMeshes(node).forEach((child) => {
-                if (meshIndexByNode.has(child)) meshIndices.push(meshIndexByNode.get(child));
-            });
-            return {
-                node,
-                layerIndex,
-                name: node.name || `Layer ${layerIndex + 1}`,
-                meshIndices,
-                meshCount: meshIndices.length,
-            };
-        })
-        .filter((entry) => entry.meshCount > 0);
-}
-
-function getLayerCandidates(root) {
-    let candidates = root.getChildren().filter((child) => hasMeshDescendant(child));
-    while (candidates.length === 1) {
-        const nestedGroups = candidates[0].getChildren?.().filter((child) => hasMeshDescendant(child)) || [];
-        if (nestedGroups.length <= 1) break;
-        candidates = nestedGroups;
-    }
-    if (!candidates.length && hasMeshDescendant(root)) candidates = [root];
-    return candidates;
-}
-
-function hasMeshDescendant(node) {
-    return getNodeMeshes(node).some((mesh) => !mesh.metadata?.selectionProxy);
-}
-
-function createLayerObjectData(entry, parent, meshes) {
-    const color = getLayerMaterialColor(entry, meshes);
-    return createSceneObject("importedLayer", {
-        name: entry.name,
-        nodeType: "layer",
-        parentId: parent.id,
-        position: vectorToData(entry.node.position),
-        rotation: vectorToData(getNodeRotation(entry.node)),
-        scale: vectorToData(entry.node.scaling),
-        material: { color },
-        source: {
-            layerIndex: entry.layerIndex,
-            layerNodeName: entry.node.name || "",
-            meshIndices: entry.meshIndices,
-            meshes: entry.meshIndices.map((meshIndex) => ({
-                meshIndex,
-                name: meshes[meshIndex]?.name || `Mesh ${meshIndex + 1}`,
-            })),
-            meshCount: entry.meshCount,
-            materialColorOverride: false,
-        },
-    });
-}
-
-function removeLayerMeshObjects(layerObject) {
-    const children = Array.isArray(layerObject.children) ? layerObject.children : [];
-    const meshChildren = children.filter((child) => child?.type === "importedMesh");
-    const otherChildren = children.filter((child) => child?.type !== "importedMesh");
-    const source = { ...(layerObject.source || {}) };
-    if ((!Array.isArray(source.meshes) || !source.meshes.length) && meshChildren.length) {
-        source.meshes = meshChildren
-            .map((meshObject) => {
-                const meshIndex = Number(meshObject?.source?.meshIndex);
-                return Number.isFinite(meshIndex)
-                    ? { meshIndex, name: meshObject.name || `Mesh ${meshIndex + 1}` }
-                    : null;
-            })
-            .filter(Boolean);
-    }
-    if ((!Array.isArray(source.meshIndices) || !source.meshIndices.length) && Array.isArray(source.meshes)) {
-        source.meshIndices = source.meshes.map((mesh) => mesh.meshIndex);
-    }
-    layerObject.children = otherChildren;
-    layerObject.source = { ...source };
-    delete layerObject.source.meshObjectsReady;
-    delete layerObject.source.meshObjectMode;
-    delete layerObject.source.meshObjectLimit;
-}
-
-function removeModelMeshObjects(modelObject, meshCount) {
-    modelObject.source = {
-        ...(modelObject.source || {}),
-        meshCount,
-        selectionLevel: "layer",
-    };
-    delete modelObject.source.meshObjectMode;
-    delete modelObject.source.meshObjectLimit;
-    (modelObject.children || [])
-        .filter((object) => object?.type === "importedLayer")
-        .forEach(removeLayerMeshObjects);
-}
-
-function getModelOriginOffset(objectData, node) {
-    if (objectData.source?.originOffset && objectData.source?.originMode === "xz-center-y-bottom") {
-        return objectData.source.originOffset;
-    }
-    const originOffset = getOriginOffsetForObject(node);
-    objectData.source = {
-        ...(objectData.source || {}),
-        originOffset,
-        originMode: "xz-center-y-bottom",
-    };
-    return originOffset;
-}
-
-function getOriginOffsetForObject(node) {
-    const bounds = getNodeBounds(node);
-    if (isBoundsEmpty(bounds)) return { x: 0, y: 0, z: 0 };
-    const center = boundsCenter(bounds);
-    return {
-        x: round(-center.x),
-        y: round(-bounds.min.y),
-        z: round(-center.z),
-    };
-}
-
-function getLayerMaterialColor(entry, meshes) {
-    const mesh = entry.meshIndices.map((meshIndex) => meshes[meshIndex]).find((item) => item?.material?.diffuseColor);
-    return mesh?.material?.diffuseColor ? mesh.material.diffuseColor.toHexString() : "#868e96";
-}
-
-function shouldApplyMaterialColor(objectData) {
-    if (!objectData?.material?.color) return false;
-    if (["importedLayer", "importedModel"].includes(objectData.type)) {
-        return objectData.source?.materialColorOverride === true;
-    }
-    return true;
-}
-
-function applyMaterialColorToObject(node, color) {
-    if (!color) return;
-    getNodeMeshes(node).forEach((mesh) => applyMaterialColor(mesh, color));
-}
-
-function applyMaterialColor(mesh, color) {
-    if (!color || !mesh?.material) return;
-    const materials = mesh.material.subMaterials || [mesh.material];
-    materials.forEach((material) => {
-        if (!material?.diffuseColor) return;
-        if (!material.metadata?.sceneCanvasCloned && material.clone) {
-            const cloned = material.clone(`${material.name || "mat"}_${createId("clone")}`);
-            cloned.metadata = { ...(material.metadata || {}), sceneCanvasCloned: true };
-            mesh.material = cloned;
-            material = cloned;
-        }
-        material.diffuseColor = BABYLON.Color3.FromHexString(color);
-    });
-}
-
-async function migrateImportedMeshesToLayers(state) {
-    let changed = false;
-    for (const modelObject of state.models.filter(
-        (object) => object.type === "importedModel" && (getObjectModelPath(object) || object.assetId),
-    )) {
-        let modelReference = getObjectModelReference(modelObject);
-        applyModelReferenceToObjectData(modelObject, modelReference, { keepModelPath: true });
-        const children = Array.isArray(modelObject.children) ? modelObject.children : [];
-        const existingLayerObjects = children.filter((object) => object.type === "importedLayer");
-        const cachedModel = await getCachedModelMetadataForObject(modelObject);
-        if (!cachedModel) continue;
-        modelReference = getObjectModelReference(modelObject);
-        applyModelReferenceToObjectData(modelObject, modelReference, { keepModelPath: true });
-        const { meshes, layerEntries } = cachedModel;
-
-        if (existingLayerObjects.length) {
-            existingLayerObjects.forEach((layerObject) => {
-                applyModelReferenceToObjectData(layerObject, modelReference);
-                removeLayerMeshObjects(layerObject);
-            });
-            removeModelMeshObjects(modelObject, meshes.length);
-            changed = true;
-            continue;
-        }
-
-        const legacyMeshes = children.filter((object) => object.type === "importedMesh");
-        if (!legacyMeshes.length) continue;
-        const layerObjects = layerEntries.map((entry) => {
-            const layerObject = createLayerObjectData(entry, modelObject, meshes);
-            removeLayerMeshObjects(layerObject);
-            return layerObject;
-        });
-        if (!layerObjects.length) continue;
-        modelObject.children = layerObjects;
-        modelObject.source = {
-            ...(modelObject.source || {}),
-            meshCount: meshes.length,
-            layerCount: layerObjects.length,
-            selectionLevel: "layer",
-        };
-        changed = true;
-    }
-    return changed;
 }
 
 function applyCanvasSettings(canvasSettings = {}) {
@@ -1236,113 +793,6 @@ function getObjectScreenAnchor(objectId, pointerEvent) {
         width,
         height,
     };
-}
-
-function updateSceneBuiltInDevicePopoverAnchor() {
-    if (!sceneBuiltInDevicePopoverAnchorId) return;
-    sceneBuiltInDevicePopoverRef.value?.setAnchor(getObjectScreenAnchor(sceneBuiltInDevicePopoverAnchorId));
-}
-
-function resetPreviewAnimationRuntime() {
-    previewAnimationStartedAt = performance.now() / 1000;
-}
-
-function updatePreviewAnimations() {
-    if (props.mode !== "view" || !sceneState) return;
-    const elapsed = Math.max(performance.now() / 1000 - previewAnimationStartedAt, 0);
-    flattenModels(sceneState.models || []).forEach((ownerData) => {
-        const animations = Array.isArray(ownerData.animations) ? ownerData.animations : [];
-        animations
-            .filter((animation) => animation?.enabled !== false)
-            .forEach((animation) => applyPreviewAnimation(ownerData, animation, elapsed));
-    });
-}
-
-function applyPreviewAnimation(ownerData, animation, elapsed) {
-    const duration = getAnimationDuration(animation);
-    if (!duration) return;
-    const targetId = animation.targetId && animation.targetId !== "self" ? animation.targetId : ownerData.id;
-    const targetData = getObjectData(targetId);
-    const node = objectMap.get(targetId);
-    if (!targetData || !node) return;
-    const localTime = getAnimationLocalTime(animation, elapsed, duration);
-    getAnimationPropertyPaths(animation).forEach((propertyPath) => {
-        const value = getAnimationPropertyValue(animation, propertyPath, localTime);
-        if (value === null) return;
-        applyAnimationPropertyValue(targetData, node, propertyPath, value);
-    });
-}
-
-function getAnimationDuration(animation) {
-    const duration = Math.max(0, ...(animation?.segments || []).map((segment) => Number(segment?.endTime) || 0));
-    return Number.isFinite(duration) ? duration : 0;
-}
-
-function getAnimationLocalTime(animation, elapsed, duration) {
-    const speed = Math.max(Number(animation?.speed) || 1, 0.1);
-    const scaledElapsed = elapsed * speed;
-    const loopCount = Math.max(Number(animation?.loopCount) || 0, 0);
-    const cycleIndex = Math.floor(scaledElapsed / duration);
-    const finished = loopCount > 0 && cycleIndex >= loopCount;
-    if (finished) {
-        if (animation?.endState === "keep") {
-            const lastCycleIndex = Math.max(loopCount - 1, 0);
-            return animation?.loopMode === "alternate" && lastCycleIndex % 2 === 1 ? 0 : duration;
-        }
-        return 0;
-    }
-    let localTime = scaledElapsed % duration;
-    if (animation?.loopMode === "alternate" && cycleIndex % 2 === 1) localTime = duration - localTime;
-    return localTime;
-}
-
-function getAnimationPropertyPaths(animation) {
-    const paths = new Set();
-    (animation?.segments || []).forEach((segment) => {
-        (segment?.properties || []).forEach((property) => {
-            if (property?.property) paths.add(property.property);
-        });
-    });
-    return Array.from(paths);
-}
-
-function getAnimationPropertyValue(animation, propertyPath, localTime) {
-    const tracks = [];
-    (animation?.segments || []).forEach((segment) => {
-        (segment?.properties || [])
-            .filter((property) => property?.property === propertyPath)
-            .forEach((property) => {
-                tracks.push({
-                    startTime: Number(segment.startTime) || 0,
-                    endTime: Number(segment.endTime) || 0,
-                    startValue: Number(property.startValue) || 0,
-                    endValue: Number(property.endValue) || 0,
-                });
-            });
-    });
-    tracks.sort((left, right) => left.startTime - right.startTime);
-    if (!tracks.length) return null;
-    for (const track of tracks) {
-        if (localTime < track.startTime) return track.startValue;
-        if (localTime <= track.endTime) {
-            const duration = Math.max(track.endTime - track.startTime, 0.0001);
-            const progress = clamp((localTime - track.startTime) / duration, 0, 1);
-            return lerp(track.startValue, track.endValue, progress);
-        }
-    }
-    return tracks[tracks.length - 1].endValue;
-}
-
-function applyAnimationPropertyValue(targetData, node, propertyPath, value) {
-    if (!Number.isFinite(value)) return;
-    const [field, axis] = String(propertyPath || "").split(".");
-    if (!["position", "rotation", "scale"].includes(field) || !["x", "y", "z"].includes(axis)) return;
-    targetData[field] = {
-        ...(targetData[field] || {}),
-        [axis]: field === "scale" ? Math.max(value, 0.001) : value,
-    };
-    const targetField = field === "scale" ? "scaling" : field;
-    node[targetField][axis] = targetData[field][axis];
 }
 
 function getCanvasPoint(event) {
@@ -1648,357 +1098,6 @@ function focusCanvasHost() {
     hostRef.value?.focus?.({ preventScroll: true });
 }
 
-function runObjectEvents(objectId, triggerType, payload = {}) {
-    const objectData = getObjectData(objectId);
-    if (!objectData?.events?.length) return [];
-    const eventItems = objectData.events.filter((eventItem) => isExecutableObjectEvent(eventItem, triggerType));
-    eventItems.forEach((eventItem) => runObjectEventAction(objectData, eventItem, payload));
-    return eventItems.map((eventItem) => eventItem.actionType);
-}
-
-function isExecutableObjectEvent(eventItem, triggerType) {
-    if (eventItem?.triggerType !== triggerType) return false;
-    if (eventItem.actionType === "customFunction") return Boolean(String(eventItem.code || "").trim());
-    if (eventItem.actionType === "devicePopover") return triggerType === "leftClick";
-    if (eventItem.actionType === "modelExplode") return ["leftClick", "leftDoubleClick"].includes(triggerType);
-    return false;
-}
-
-function runObjectEventAction(objectData, eventItem, payload = {}) {
-    if (eventItem.actionType === "devicePopover") {
-        showDevicePopover(objectData, eventItem, payload);
-        return;
-    }
-    if (eventItem.actionType === "modelExplode") {
-        explodeModel({
-            objectId: objectData.id,
-            eventId: eventItem.id,
-            triggerType: eventItem.triggerType,
-            explodeConfig: eventItem.explodeConfig,
-            object: objectData,
-            event: eventItem,
-            pointerEvent: payload.pointerEvent,
-            hit: payload.hit,
-        });
-        return;
-    }
-    runCustomObjectEvent(objectData, eventItem, payload);
-}
-
-function runCustomObjectEvent(objectData, eventItem, payload = {}) {
-    objectEventTriggerStack.push(eventItem.triggerType);
-    try {
-        const handler = new Function(
-            "context",
-            "object",
-            "object3d",
-            "event",
-            "scene",
-            "camera",
-            "controls",
-            "BABYLON",
-            "het3d",
-            eventItem.code,
-        );
-        const context = {
-            object: objectData,
-            object3d: objectMap.get(objectData.id),
-            event: eventItem,
-            trigger: payload,
-            scene,
-            camera,
-            controls,
-            BABYLON,
-            het3d: canvasHet3dApi,
-        };
-        handler(
-            context,
-            context.object,
-            context.object3d,
-            context.event,
-            context.scene,
-            context.camera,
-            context.controls,
-            context.BABYLON,
-            context.het3d,
-        );
-    } catch (error) {
-        console.error("Object event execution failed", error);
-        notifyMessage("error", `Object event execution failed: ${error.message}`, error);
-    } finally {
-        objectEventTriggerStack.pop();
-    }
-}
-
-function showPublicDevicePopover(options = {}) {
-    if (!sceneState) return false;
-    const normalizedOptions = normalizePublicDevicePopoverOptions(options);
-    if (normalizedOptions.popoverMode !== "builtIn" && isObjectEventTriggerRunning("leftClick")) {
-        floatingDevicePopoverOpenedDuringClickEvent = true;
-    }
-    const objectData = resolvePublicDevicePopoverObject(normalizedOptions);
-    showDevicePopover(
-        objectData,
-        {
-            actionType: "devicePopover",
-            triggerType: "manual",
-            popoverMode: normalizedOptions.popoverMode,
-            deviceNo: normalizedOptions.deviceNo,
-            params: normalizedOptions.params,
-        },
-        {
-            pointerEvent: normalizedOptions.pointerEvent,
-            anchor: normalizedOptions.anchor,
-        },
-    );
-    return true;
-}
-
-function explodeModel(options = {}) {
-    if (!sceneState || props.mode !== "view") return false;
-    const source = isPlainRecord(options) ? options : {};
-    const objectId = String(source.objectId || source.targetId || source.id || source.object?.id || source.objectData?.id || "").trim();
-    const objectData = objectId ? getObjectData(objectId) : null;
-    const eventItem = resolveModelExplodeEvent(objectData, source);
-    const explodeConfig = normalizeModelExplodeConfig(source.explodeConfig || eventItem?.explodeConfig || {});
-    const payload = {
-        sceneId: sceneState.id,
-        eventId: String(source.eventId || eventItem?.id || "").trim(),
-        objectId: objectData?.id || objectId,
-        triggerType: source.triggerType || eventItem?.triggerType || "manual",
-        explodeConfig,
-        object: cloneData(objectData || source.objectData || source.object || null),
-        event: cloneData(eventItem || source.event || null),
-        pointerEvent: source.pointerEvent || source.event?.pointerEvent || null,
-        hit: source.hit || null,
-    };
-    return runModelExplode(payload);
-}
-
-function resolveModelExplodeEvent(objectData, source) {
-    if (isPlainRecord(source.event) && source.event.actionType === "modelExplode") return source.event;
-    const events = Array.isArray(objectData?.events) ? objectData.events : [];
-    const eventId = String(source.eventId || "").trim();
-    if (eventId) {
-        const matched = events.find((eventItem) => eventItem?.id === eventId);
-        if (matched) return matched;
-    }
-    return events.find((eventItem) => eventItem?.actionType === "modelExplode") || null;
-}
-
-function normalizeModelExplodeConfig(config = {}) {
-    const source = isPlainRecord(config) ? config : {};
-    return {
-        targets: Array.isArray(source.targets) ? source.targets : [],
-        targetIds: source.targetIds || source.objectIds || source.ids || "",
-        direction: ["up", "down", "both", "custom"].includes(source.direction) ? source.direction : "up",
-        spacing: Math.max(Number(source.spacing) || 0, 0),
-        duration: Math.max(Number(source.duration) || 800, 0),
-        easing: source.easing || "linear",
-        toggle: source.toggle !== false,
-        offset: normalizeModelExplodeVector(source.offset, { x: 0, y: 0, z: 0 }),
-    };
-}
-
-function runModelExplode(payload = {}) {
-    const triggerObject = payload.objectId ? getObjectData(payload.objectId) : null;
-    const targets = resolveModelExplodeTargets(payload.explodeConfig, triggerObject);
-    if (!targets.length) return false;
-    const now = performance.now();
-    const duration = Math.max(Number(payload.explodeConfig?.duration) || 800, 0);
-    const eventKey = payload.eventId || payload.objectId || "manual";
-    let started = false;
-    targets.forEach((target, index) => {
-        const targetId = String(target.objectId || target.id || "").trim();
-        const targetData = targetId ? getObjectData(targetId) : null;
-        const node = targetId ? objectMap.get(targetId) : null;
-        if (!targetData || !node) return;
-        const stateKey = `${eventKey}:${targetId}`;
-        const existingState = modelExplodeStates.get(stateKey);
-        const existingAnimation = activeModelExplodeAnimations.get(stateKey);
-        const fromPosition = existingState?.fromPosition || normalizeModelExplodeVector(target.fromPosition, targetData.position);
-        const toPosition =
-            existingState?.toPosition ||
-            normalizeModelExplodeVector(
-                target.toPosition,
-                getAutoModelExplodeTargetPosition(targetData, payload.explodeConfig, index, targets.length, fromPosition),
-            );
-        const targetExpanded = payload.explodeConfig?.toggle
-            ? existingAnimation
-                ? !existingAnimation.targetExpanded
-                : !existingState?.expanded
-            : true;
-        const destination = targetExpanded ? toPosition : fromPosition;
-        const startPosition = vectorFromObject3DPosition(node.position);
-        modelExplodeStates.set(stateKey, {
-            fromPosition,
-            toPosition,
-            expanded: existingState?.expanded || false,
-        });
-        activeModelExplodeAnimations.set(stateKey, {
-            stateKey,
-            targetId,
-            targetData,
-            node,
-            parentImportedModelId: getModelExplodeParentImportedModelId(targetData),
-            startPosition,
-            endPosition: destination,
-            startedAt: now,
-            duration,
-            targetExpanded,
-        });
-        started = true;
-    });
-    if (started) emitCanvasEvent("modelExplode", cloneData(sanitizeEventPayload(payload)));
-    return started;
-}
-
-function resolveModelExplodeTargets(config = {}, triggerObject) {
-    if (Array.isArray(config.targets) && config.targets.length) {
-        return config.targets
-            .map((target) => (isPlainRecord(target) ? target : null))
-            .filter((target) => target?.objectId || target?.id)
-            .flatMap((target) => expandModelExplodeTarget(target));
-    }
-    const ids = parseModelExplodeTargetIds(config.targetIds);
-    if (!ids.length && triggerObject?.id) ids.push(triggerObject.id);
-    return ids.flatMap((id) => expandModelExplodeTarget({ objectId: id }));
-}
-
-function expandModelExplodeTarget(target) {
-    const targetId = String(target.objectId || target.id || "").trim();
-    const targetData = targetId ? getObjectData(targetId) : null;
-    if (!targetData) return [];
-    const childLayers = getModelExplodeLayerTargets(targetData);
-    if (childLayers.length) {
-        return childLayers.map((layerData) => ({
-            ...target,
-            objectId: layerData.id,
-            id: layerData.id,
-            fromPosition: target.fromPosition ? undefined : layerData.position,
-        }));
-    }
-    return [{ ...target, objectId: targetId, id: targetId }];
-}
-
-function getModelExplodeLayerTargets(objectData) {
-    const layers = (objectData?.children || []).filter((child) => child?.type === "importedLayer");
-    return layers.length ? layers.slice().sort(compareModelExplodeLayers) : [];
-}
-
-function compareModelExplodeLayers(left, right) {
-    const leftIndex = Number(left?.source?.layerIndex);
-    const rightIndex = Number(right?.source?.layerIndex);
-    if (Number.isFinite(leftIndex) && Number.isFinite(rightIndex)) return leftIndex - rightIndex;
-    return String(left?.name || "").localeCompare(String(right?.name || ""), "zh-Hans-CN");
-}
-
-function parseModelExplodeTargetIds(value) {
-    if (Array.isArray(value)) return value.map((id) => String(id || "").trim()).filter(Boolean);
-    return String(value || "").split(",").map((id) => id.trim()).filter(Boolean);
-}
-
-function getAutoModelExplodeTargetPosition(targetData, config, index, count, fromPosition) {
-    const spacing = Number(config?.spacing) || getModelExplodeDefaultSpacing(targetData);
-    const direction = config?.direction || "up";
-    const offset = normalizeModelExplodeVector(config?.offset, { x: 0, y: 0, z: 0 });
-    const stepIndex = count > 1 ? index : 1;
-    const next = { ...fromPosition };
-    if (direction === "custom") {
-        next.x += offset.x * stepIndex;
-        next.y += offset.y * stepIndex;
-        next.z += offset.z * stepIndex;
-        return next;
-    }
-    if (direction === "down") {
-        next.y -= spacing * stepIndex;
-        return next;
-    }
-    if (direction === "both") {
-        next.y += (index - (count - 1) / 2) * spacing;
-        return next;
-    }
-    next.y += spacing * stepIndex;
-    return next;
-}
-
-function getModelExplodeDefaultSpacing(targetData) {
-    const node = targetData?.id ? objectMap.get(targetData.id) : null;
-    if (!node) return 2;
-    const bounds = getNodeBounds(node);
-    if (isBoundsEmpty(bounds)) return 2;
-    const size = boundsSize(bounds);
-    return Math.max(size.y || 0, size.x || 0, size.z || 0, 1);
-}
-
-function normalizeModelExplodeVector(value, fallback = { x: 0, y: 0, z: 0 }) {
-    const source = isPlainRecord(value) ? value : {};
-    return {
-        x: Number.isFinite(Number(source.x)) ? Number(source.x) : Number(fallback?.x) || 0,
-        y: Number.isFinite(Number(source.y)) ? Number(source.y) : Number(fallback?.y) || 0,
-        z: Number.isFinite(Number(source.z)) ? Number(source.z) : Number(fallback?.z) || 0,
-    };
-}
-
-function vectorFromObject3DPosition(position) {
-    return {
-        x: Number(position?.x) || 0,
-        y: Number(position?.y) || 0,
-        z: Number(position?.z) || 0,
-    };
-}
-
-function updateModelExplodeAnimations() {
-    if (!activeModelExplodeAnimations.size) return;
-    const now = performance.now();
-    const completedImportedModelIds = new Set();
-    let hasCompletedAnimation = false;
-    activeModelExplodeAnimations.forEach((animation, stateKey) => {
-        const node = animation.node || objectMap.get(animation.targetId);
-        const targetData = animation.targetData || getObjectData(animation.targetId);
-        if (!node || !targetData) {
-            activeModelExplodeAnimations.delete(stateKey);
-            return;
-        }
-        const progress = animation.duration <= 0 ? 1 : clamp((now - animation.startedAt) / animation.duration, 0, 1);
-        const nextPosition = {
-            x: lerp(animation.startPosition.x, animation.endPosition.x, progress),
-            y: lerp(animation.startPosition.y, animation.endPosition.y, progress),
-            z: lerp(animation.startPosition.z, animation.endPosition.z, progress),
-        };
-        applyModelExplodePosition(targetData, node, nextPosition, progress >= 1);
-        if (progress >= 1) {
-            const state = modelExplodeStates.get(stateKey);
-            if (state) {
-                state.expanded = animation.targetExpanded;
-                modelExplodeStates.set(stateKey, state);
-            }
-            if (animation.parentImportedModelId) completedImportedModelIds.add(animation.parentImportedModelId);
-            activeModelExplodeAnimations.delete(stateKey);
-            hasCompletedAnimation = true;
-        }
-    });
-    if (completedImportedModelIds.size) {
-        completedImportedModelIds.forEach(refreshImportedModelSelectionProxy);
-        updateSelectionHelpers();
-    }
-    if (hasCompletedAnimation) emitSceneChange();
-}
-
-function getModelExplodeParentImportedModelId(targetData) {
-    if (targetData?.type === "importedModel") return targetData.id;
-    const parentData = targetData?.parentId ? getObjectData(targetData.parentId) : null;
-    return parentData?.type === "importedModel" ? parentData.id : "";
-}
-
-function applyModelExplodePosition(targetData, node, position, shouldSyncData = false) {
-    node.position = toVector3(position, { x: 0, y: 0, z: 0 });
-    if (shouldSyncData) {
-        targetData.position = vectorToData(node.position);
-        node.position = toVector3(targetData.position, { x: 0, y: 0, z: 0 });
-    }
-}
-
 function refreshImportedModelSelectionProxy(modelId) {
     const modelData = getObjectData(modelId);
     const modelRoot = objectMap.get(modelId);
@@ -2016,52 +1115,13 @@ function refreshImportedModelSelectionProxy(modelId) {
     proxy.position = worldToLocal(modelRoot, center);
 }
 
-function normalizePublicDevicePopoverOptions(options = {}) {
-    const source = isPlainRecord(options) ? options : { deviceNo: options };
-    const params = source.params;
-    const paramsDeviceNo = getPublicDevicePopoverParamsDeviceNo(params);
-    const objectId = String(source.objectId || source.targetId || source.id || source.objectData?.id || source.object?.id || "").trim();
-    return {
-        objectId,
-        objectData: isPlainRecord(source.objectData) ? source.objectData : null,
-        object: isPlainRecord(source.object) ? source.object : null,
-        objectName: String(source.objectName || source.name || source.objectData?.name || source.object?.name || ""),
-        deviceNo: String(source.deviceNo || paramsDeviceNo || "").trim(),
-        params,
-        popoverMode: source.popoverMode === "builtIn" ? "builtIn" : "floating",
-        pointerEvent: source.pointerEvent || source.event || null,
-        anchor: source.anchor || null,
-    };
+function emitAnimationRuntimeEvent(type, payload) {
+    emit(type, payload);
+    emitCanvasEvent(type, payload);
 }
 
-function getPublicDevicePopoverParamsDeviceNo(params) {
-    if (!params) return "";
-    if (typeof params === "string") {
-        const text = params.trim();
-        if (!text) return "";
-        try {
-            const parsed = JSON.parse(text);
-            return String(parsed?.deviceNo || text).trim();
-        } catch {
-            return text;
-        }
-    }
-    if (isPlainRecord(params)) return String(params.deviceNo || "").trim();
-    return "";
-}
-
-function resolvePublicDevicePopoverObject(options) {
-    if (options.objectData) return options.objectData;
-    if (options.object) return options.object;
-    if (options.objectId) {
-        const objectData = getObjectData(options.objectId);
-        if (objectData) return objectData;
-    }
-    return { id: options.objectId, name: options.objectName };
-}
-
-function isPlainRecord(value) {
-    return Boolean(value && typeof value === "object" && !Array.isArray(value));
+function handleDocumentVisibilityChange() {
+    animationRuntime.setDocumentHidden(document.hidden);
 }
 
 function getCanvasEventBus() {
@@ -2083,380 +1143,6 @@ function onceCanvasEvent(type, handler) {
 
 function emitCanvasEvent(type, payload) {
     return getCanvasEventBus()?.emit?.(type, payload) || [];
-}
-
-function showDevicePopover(objectData, eventItem, payload = {}) {
-    emit("device-popover", {
-        object: cloneData(objectData || null),
-        event: cloneData(eventItem || null),
-        payload: sanitizeEventPayload(payload),
-        mode: eventItem?.popoverMode === "builtIn" ? "builtIn" : "floating",
-    });
-    if (!resolvedDevicePopoverComponent.value) return;
-    if (eventItem?.popoverMode === "builtIn") {
-        hideFloatingDevicePopover();
-        sceneBuiltInDevicePopoverAnchorId = objectData?.id || "";
-        sceneBuiltInDevicePopoverRef.value?.show(objectData, eventItem, {
-            ...payload,
-            anchor: payload.anchor || getObjectScreenAnchor(objectData?.id, payload.pointerEvent),
-        });
-        return;
-    }
-    devicePopoverRef.value?.show(objectData, eventItem, {
-        ...payload,
-        pointerEvent: payload.pointerEvent || getFloatingDevicePopoverPointerEvent(objectData?.id, payload.anchor),
-    });
-}
-
-function sanitizeEventPayload(payload = {}) {
-    if (!isPlainRecord(payload)) return payload;
-    return {
-        ...payload,
-        pointerEvent: sanitizePointerEvent(payload.pointerEvent),
-        hit: sanitizeHit(payload.hit),
-    };
-}
-
-function sanitizePointerEvent(event) {
-    if (!event) return null;
-    return {
-        clientX: Number(event.clientX) || 0,
-        clientY: Number(event.clientY) || 0,
-        button: Number(event.button) || 0,
-        ctrlKey: Boolean(event.ctrlKey),
-        metaKey: Boolean(event.metaKey),
-        shiftKey: Boolean(event.shiftKey),
-        altKey: Boolean(event.altKey),
-    };
-}
-
-function sanitizeHit(hit) {
-    if (!hit) return null;
-    return {
-        id: hit.id || "",
-        point: hit.point ? vectorToData(hit.point) : null,
-    };
-}
-
-function getFloatingDevicePopoverPointerEvent(objectId, anchor) {
-    if (Number.isFinite(anchor?.clientX) && Number.isFinite(anchor?.clientY)) {
-        return { clientX: anchor.clientX, clientY: anchor.clientY };
-    }
-    const rect = hostRef.value?.getBoundingClientRect();
-    if (!rect) return null;
-    const point = Number.isFinite(anchor?.x) && Number.isFinite(anchor?.y) ? anchor : getObjectScreenAnchor(objectId);
-    if (!point) return null;
-    return { clientX: rect.left + point.x, clientY: rect.top + point.y };
-}
-
-function hideFloatingDevicePopover() {
-    devicePopoverRef.value?.hide();
-}
-
-function hideSceneBuiltInDevicePopover() {
-    sceneBuiltInDevicePopoverAnchorId = "";
-    sceneBuiltInDevicePopoverRef.value?.hide();
-}
-
-function hideAllDevicePopovers() {
-    hideFloatingDevicePopover();
-    hideSceneBuiltInDevicePopover();
-}
-
-function handleSceneBuiltInDevicePopoverClose() {
-    sceneBuiltInDevicePopoverAnchorId = "";
-}
-
-function getCanvasHet3dSetValueOptions() {
-    return { syncBindingValues: !isObjectEventTriggerRunning("valueChange") };
-}
-
-function isObjectEventTriggerRunning(triggerType) {
-    return objectEventTriggerStack.includes(triggerType);
-}
-
-function clearCanvasHttpsPolling() {
-    if (httpsPollingTimer) {
-        clearInterval(httpsPollingTimer);
-        httpsPollingTimer = null;
-    }
-}
-
-function getCanvasHttpsPollingSignature(config) {
-    if (!config) return "";
-    return JSON.stringify({
-        enabled: Boolean(config.enabled),
-        url: config.url,
-        method: config.method,
-        headers: config.headers,
-        query: config.query,
-        body: config.body,
-        processor: config.processor,
-        intervalSeconds: config.intervalSeconds,
-    });
-}
-
-function restartCanvasHttpsPolling({ immediate = false } = {}) {
-    if (props.mode !== "view") {
-        clearCanvasHttpsPolling();
-        return;
-    }
-    const config = normalizeHttpsConfigData(sceneState?.httpsConfig || {});
-    sceneState.httpsConfig = config;
-    const signature = getCanvasHttpsPollingSignature(config);
-    if (!config.enabled || !config.url) {
-        clearCanvasHttpsPolling();
-        httpsPollingSignature = signature;
-        runInitialBindingValueChangeEvents([]);
-        return;
-    }
-    if (httpsPollingTimer && signature === httpsPollingSignature) {
-        if (immediate) runCanvasHttpsRequest();
-        return;
-    }
-    clearCanvasHttpsPolling();
-    httpsPollingSignature = signature;
-    httpsPollingTimer = setInterval(runCanvasHttpsRequest, config.intervalSeconds * 1000);
-    if (immediate) runCanvasHttpsRequest();
-}
-
-async function requestSceneData(options) {
-    if (props.requestHandler) return props.requestHandler(options);
-    return defaultRequestHandler(options);
-}
-
-async function defaultRequestHandler({ method, url, headers, query, body, timeout = 10000 }) {
-    const requestMethod = method === "POST" ? "POST" : "GET";
-    const requestHeaders = normalizeRequestHeaders(headers);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
-    const requestUrl = appendQueryToUrl(url, query);
-    const requestOptions = { method: requestMethod, signal: controller.signal };
-    if (Object.keys(requestHeaders).length) requestOptions.headers = requestHeaders;
-    if (requestMethod !== "GET" && hasRequestValue(body)) requestOptions.body = stringifyRequestBody(body);
-    try {
-        const response = await fetch(requestUrl, requestOptions);
-        const data = await readResponseData(response);
-        if (!response.ok) throw new Error(`${requestMethod} ${response.status}`);
-        return data;
-    } finally {
-        clearTimeout(timeoutId);
-    }
-}
-
-function normalizeRequestHeaders(headers = {}) {
-    if (!headers || typeof headers !== "object" || Array.isArray(headers)) return {};
-    return Object.fromEntries(
-        Object.entries(headers)
-            .filter(([, value]) => value !== undefined && value !== null)
-            .map(([key, value]) => [key, String(value)]),
-    );
-}
-
-async function readResponseData(response) {
-    const text = await response.text();
-    if (!text) return null;
-    try {
-        return JSON.parse(text);
-    } catch {
-        return text;
-    }
-}
-
-function stringifyRequestBody(body) {
-    return typeof body === "string" ? body : JSON.stringify(body);
-}
-
-function hasRequestValue(value) {
-    if (value === undefined) return false;
-    if (value === null) return true;
-    if (Array.isArray(value)) return value.length > 0;
-    if (typeof value === "object") return Object.keys(value).length > 0;
-    if (typeof value === "string") return value.length > 0;
-    return true;
-}
-
-function appendQueryToUrl(url, query = {}) {
-    const requestUrl = String(url || "").trim();
-    const entries = Object.entries(query || {}).filter(([, value]) => value !== undefined);
-    if (!entries.length) return requestUrl;
-    const [urlWithoutHash, hash = ""] = requestUrl.split("#");
-    const [baseUrl, search = ""] = urlWithoutHash.split("?");
-    const params = new URLSearchParams(search);
-    entries.forEach(([key, value]) => {
-        if (Array.isArray(value)) {
-            params.delete(key);
-            value.forEach((item) => params.append(key, item == null ? "" : String(item)));
-            return;
-        }
-        params.set(key, value == null ? "" : String(value));
-    });
-    const nextSearch = params.toString();
-    return `${baseUrl}${nextSearch ? `?${nextSearch}` : ""}${hash ? `#${hash}` : ""}`;
-}
-
-async function runCanvasHttpsRequest() {
-    if (props.mode !== "view" || !sceneState || httpsRequestRunning) return;
-    const config = normalizeHttpsConfigData(sceneState.httpsConfig || {});
-    if (!config.enabled || !config.url) return;
-    const headersResult = parseHttpsJsonText(config.headers, "Headers", { objectOnly: true });
-    if (!headersResult.ok) {
-        console.warn(headersResult.message);
-        return;
-    }
-    const queryResult = parseHttpsJsonText(config.query, "Query", { objectOnly: true });
-    if (!queryResult.ok) {
-        console.warn(queryResult.message);
-        return;
-    }
-    const bodyResult = parseHttpsJsonText(config.body, "Body");
-    if (!bodyResult.ok) {
-        console.warn(bodyResult.message);
-        return;
-    }
-    httpsRequestRunning = true;
-    try {
-        const requestOptions = { method: config.method, url: config.url, timeout: 10000 };
-        if (hasRequestValue(headersResult.value)) requestOptions.headers = headersResult.value;
-        if (hasRequestValue(queryResult.value)) requestOptions.query = queryResult.value;
-        if (hasRequestValue(bodyResult.value)) requestOptions.body = bodyResult.value;
-        const responseData = await requestSceneData(requestOptions);
-        const processedData = await runHttpsResponseProcessor(responseData, config.processor);
-        const changes = applyProcessedDataToSceneBindings(sceneState, processedData);
-        if (!initialValueChangeEventsExecuted) {
-            runInitialBindingValueChangeEvents(processedData, changes);
-            if (changes.length) emitSceneChange();
-        } else if (changes.length) {
-            runBindingValueChangeEvents(changes, processedData);
-            emitSceneChange();
-        }
-    } catch (error) {
-        console.error("Preview data request failed", error);
-    } finally {
-        httpsRequestRunning = false;
-    }
-}
-
-function runInitialBindingValueChangeEvents(processedData = [], actualChanges = []) {
-    if (props.mode !== "view" || !sceneState || initialValueChangeEventsExecuted) return;
-    initialValueChangeEventsExecuted = true;
-    const actualChangeMap = new Map(actualChanges.map((change) => [`${change.objectId || ""}:${change.dataId || ""}`, change]));
-    flattenModels(sceneState.models || [])
-        .filter(hasExecutableValueChangeEvent)
-        .forEach((objectData) => {
-            const bindings = Array.isArray(objectData.dataBindings) ? objectData.dataBindings : [];
-            const changes = bindings.map((bindingItem) => {
-                const changeKey = `${objectData.id}:${bindingItem.id || ""}`;
-                const actualChange = actualChangeMap.get(changeKey);
-                if (actualChange) return actualChange;
-                return {
-                    objectId: objectData.id,
-                    object: cloneData(objectData),
-                    dataId: bindingItem.id,
-                    propName: bindingItem.propName,
-                    displayName: bindingItem.displayName,
-                    binding: cloneData(bindingItem.binding || null),
-                    previousValue: undefined,
-                    currentValue: cloneEventValue(bindingItem.value),
-                    sourceRecord: null,
-                    initial: true,
-                };
-            });
-            runObjectEvents(objectData.id, "valueChange", {
-                initial: true,
-                changes: cloneData(changes),
-                processedData: cloneData(processedData),
-            });
-        });
-}
-
-function hasExecutableValueChangeEvent(objectData) {
-    return (objectData.events || []).some(
-        (eventItem) =>
-            eventItem?.triggerType === "valueChange" &&
-            eventItem?.actionType === "customFunction" &&
-            String(eventItem?.code || "").trim(),
-    );
-}
-
-function cloneEventValue(value) {
-    return value === undefined ? undefined : cloneData(value);
-}
-
-function runBindingValueChangeEvents(changes, processedData) {
-    const changesByObject = new Map();
-    changes.forEach((change) => {
-        if (!change.objectId) return;
-        if (!changesByObject.has(change.objectId)) changesByObject.set(change.objectId, []);
-        changesByObject.get(change.objectId).push(change);
-    });
-    changesByObject.forEach((objectChanges, objectId) => {
-        runObjectEvents(objectId, "valueChange", {
-            changes: cloneData(objectChanges),
-            processedData: cloneData(processedData),
-        });
-    });
-}
-
-function handleHet3dValueChange(nextObject, previousObject, payload = {}) {
-    if (props.mode !== "view" || !sceneState) return;
-    if (isObjectEventTriggerRunning("valueChange")) return;
-    const changes = getHet3dBindingValueChanges(nextObject, previousObject, payload);
-    if (!changes.length) return;
-    runBindingValueChangeEvents(changes, []);
-}
-
-function getHet3dBindingValueChanges(nextObject, previousObject, payload = {}) {
-    if (!nextObject?.id) return [];
-    const payloadKeys = new Set(Object.keys(payload || {}).filter((key) => key !== "id"));
-    const previousBindings = new Map(
-        (previousObject?.dataBindings || []).map((bindingItem, index) => [getBindingChangeKey(bindingItem, index), bindingItem]),
-    );
-    const latestObject = getObjectData(nextObject.id) || nextObject;
-    return (nextObject.dataBindings || [])
-        .map((bindingItem, index) => {
-            const propName = String(bindingItem?.propName || "").trim();
-            if (!propName || !payloadKeys.has(propName)) return null;
-            const previousBinding = previousBindings.get(getBindingChangeKey(bindingItem, index));
-            const previousValue = getBindingRuntimeValue(previousObject, previousBinding, propName);
-            const currentValue = getBindingRuntimeValue(nextObject, bindingItem, propName);
-            if (isEventDataValueEqual(previousValue, currentValue)) return null;
-            return {
-                objectId: nextObject.id,
-                object: cloneData(latestObject),
-                dataId: bindingItem.id,
-                propName,
-                displayName: bindingItem.displayName,
-                binding: cloneEventValue(bindingItem.binding || null),
-                previousValue: cloneEventValue(previousValue),
-                currentValue: cloneEventValue(currentValue),
-                sourceRecord: null,
-                source: "het3d.setValue",
-            };
-        })
-        .filter(Boolean);
-}
-
-function getBindingChangeKey(bindingItem, index) {
-    return bindingItem?.id || bindingItem?.propName || String(index);
-}
-
-function getBindingRuntimeValue(objectData, bindingItem, propName) {
-    if (bindingItem && Object.prototype.hasOwnProperty.call(bindingItem, "value")) return bindingItem.value;
-    return objectData?.[propName];
-}
-
-function isEventDataValueEqual(left, right) {
-    return stableEventDataValue(left) === stableEventDataValue(right);
-}
-
-function stableEventDataValue(value) {
-    if (value === undefined) return "__undefined__";
-    try {
-        return JSON.stringify(value);
-    } catch {
-        return String(value);
-    }
 }
 
 function toggleId(ids, id) {
@@ -2860,14 +1546,14 @@ function finishPendingViewClick(event) {
     const distance = getPointerDistance(event, pending);
     if (distance > 6) return;
     if (pending.hit) {
-        floatingDevicePopoverOpenedDuringClickEvent = false;
+        beginViewClick();
         const actions = runObjectEvents(pending.hit.id, "leftClick", {
             pointerEvent: event,
             hit: pending.hit,
         });
+        const openedByCustomEvent = consumeFloatingPopoverOpened();
         const shouldKeepFloatingDevicePopover =
-            actions.includes("devicePopover") || floatingDevicePopoverOpenedDuringClickEvent;
-        floatingDevicePopoverOpenedDuringClickEvent = false;
+            actions.includes("devicePopover") || openedByCustomEvent;
         if (!shouldKeepFloatingDevicePopover) hideFloatingDevicePopover();
     } else {
         hideFloatingDevicePopover();
@@ -3181,6 +1867,12 @@ function regeneratePastedObjectInternalIds(objectData) {
         objectData.events = objectData.events.map((eventItem) => ({ ...eventItem, id: createId("event") }));
     }
     if (Array.isArray(objectData.animations)) objectData.animations = objectData.animations.map(regeneratePastedAnimationIds);
+    if (Array.isArray(objectData.builtInAnimations)) {
+        objectData.builtInAnimations = objectData.builtInAnimations.map((animation) => ({
+            ...animation,
+            id: createId("builtin"),
+        }));
+    }
 }
 
 function regeneratePastedAnimationIds(animation) {
@@ -3203,6 +1895,12 @@ function remapPastedObjectReferences(pastedObjects, idMap) {
                 if (idMap.has(animation.targetId)) animation.targetId = idMap.get(animation.targetId);
             });
         }
+        (objectData.events || []).forEach((eventItem) => {
+            const targetObjectId = eventItem?.animationControl?.targetObjectId;
+            if (targetObjectId && idMap.has(targetObjectId)) {
+                eventItem.animationControl.targetObjectId = idMap.get(targetObjectId);
+            }
+        });
     });
 }
 
@@ -3296,6 +1994,7 @@ function updateSceneObject(objectData) {
         if (objectData.type === "icon") updateIconMaterial(node, objectData);
         else if (shouldApplyMaterialColor(objectData)) applyMaterialColorToObject(node, objectData.material?.color);
     }
+    animationRuntime.syncObject(objectData.id);
     updateSelectionHelpers();
     scheduleCameraRangeUpdate();
     emitSceneChange();
@@ -3371,6 +2070,7 @@ async function importModelSource({ name, modelPath = "" }) {
         const runtime = await importModelRuntime(modelPath, { enabled: false });
         const { meshes, layerEntries } = createCachedModelMetadata(runtime.content, runtime.meshes);
         const originOffset = getOriginOffsetForObject(runtime.content);
+        disposeAnimationGroups(runtime.animationGroups);
         runtime.root.dispose(false, true);
         assetSceneCache.set(`path:${modelPath}`, { meshes, layerEntries });
 
@@ -3529,6 +2229,17 @@ defineExpose({
     setValue: canvasHet3dApi.setValue,
     showDevicePopover: showPublicDevicePopover,
     explodeModel,
+    getAnimationCatalog: animationRuntime.getAnimationCatalog,
+    playObjectAnimations: animationRuntime.playObjectAnimations,
+    playAnimation: animationRuntime.playAnimation,
+    pauseAnimation: animationRuntime.pauseAnimation,
+    resumeAnimation: animationRuntime.resumeAnimation,
+    stopAnimation: animationRuntime.stopAnimation,
+    restartAnimation: animationRuntime.restartAnimation,
+    seekAnimation: animationRuntime.seekAnimation,
+    getAnimationState: animationRuntime.getAnimationState,
+    stopAllAnimations: animationRuntime.stopAllAnimations,
+    applyAnimationSettings: animationRuntime.applyAnimationSettings,
     loadScene,
     reloadScene: () => loadSceneData(sceneState),
     captureThumbnail,

@@ -1,4 +1,4 @@
-import { cloneData, flattenModels } from "./sceneObjects";
+import { cloneData, flattenModels } from "./sceneObjects.js";
 
 export function defaultHttpsProcessor() {
     return `function handleMessage(e) {

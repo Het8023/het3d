@@ -1,13 +1,15 @@
 # het3d 使用文档
 
-`het3d` 是一个基于 Vue 3 和 Three.js 的 3D 场景组件。它只提供 npm 包运行所需的能力：3D 画布、场景渲染、编辑态对象操作、预览态事件执行、模型加载、数据绑定和运行时 API。
+`het3d` 是一个基于 Vue 3 和 Babylon.js 的 3D 场景组件。它只提供 npm 包运行所需的能力：3D 画布、场景渲染、编辑态对象操作、预览态事件执行、模型加载、动画、数据绑定和运行时 API。
 
 当前已更新为babylonjs，优化大模型导入卡顿问题
 
 本包不包含登录页、路由、业务接口、demo 页面、内置资源库和项目应用壳。宿主项目需要自己提供场景数据、模型 URL、请求方法和业务弹窗。
 
 源码地址：[het3d](https://github.com/Het8023/het3d)
-演示项目地址：[het3d](https://het8023.github.io/het3d_edit_preview/)
+
+演示项目地址：[het3d_preview](https://het8023.github.io/het3d_edit_preview/)
+
 示例代码地址：[het3d_edit](https://github.com/Het8023/het3d_edit)
 
 ## 安装
@@ -15,10 +17,10 @@
 Vue 3 + Vite 项目中安装：
 
 ```bash
-npm install het3d three vue
+npm install het3d vue
 ```
 
-`vue` 和 `three` 是 peer dependencies，需要由宿主项目安装。
+`vue` 是 peer dependency，需要由宿主项目安装；Babylon.js 运行依赖由 `het3d` 提供。
 
 ## 基础使用
 
@@ -121,14 +123,18 @@ createApp(App).use(Het3d).mount("#app");
 
 ## Events
 
-| Event             | Payload                            | 说明                                         |
-| ----------------- | ---------------------------------- | -------------------------------------------- |
-| `scene-ready`     | `{ scene }`                        | 场景加载并创建 Three.js 对象后触发。         |
-| `scene-change`    | `{ scene }`                        | 编辑态对象、相机、灯光或画布配置变化时触发。 |
-| `select`          | `{ ids, objects }`                 | 画布选中对象变化时触发。                     |
-| `thumbnail-ready` | `{ thumbnail }`                    | 调用 `captureThumbnail()` 后触发。           |
-| `device-popover`  | `{ object, event, payload, mode }` | 设备弹窗动作触发时发出。                     |
-| `message`         | `{ type, message, detail }`        | 导入失败、事件执行失败等消息。               |
+| Event                     | Payload                                        | 说明                                         |
+| ------------------------- | ---------------------------------------------- | -------------------------------------------- |
+| `scene-ready`             | `{ scene }`                                    | 场景加载并创建 Babylon.js 对象后触发。       |
+| `scene-change`            | `{ scene }`                                    | 编辑态对象、相机、灯光或画布配置变化时触发。 |
+| `select`                  | `{ ids, objects }`                             | 画布选中对象变化时触发。                     |
+| `thumbnail-ready`         | `{ thumbnail }`                                | 调用 `captureThumbnail()` 后触发。           |
+| `device-popover`          | `{ object, event, payload, mode }`             | 设备弹窗动作触发时发出。                     |
+| `animation-catalog-ready` | `{ objectId, clips }`                          | 导入模型的 GLB 动画目录可用时触发。          |
+| `animation-state-change`  | `{ objectId, animationId, sourceType, state }` | 动画状态变化时触发。                         |
+| `animation-finish`        | `{ objectId, animationId, sourceType, state }` | 动画完成时触发。                             |
+| `animation-error`         | `{ code, message, ... }`                       | 动画目标、配置或运行状态无效时触发。         |
+| `message`                 | `{ type, message, detail }`                    | 导入失败、事件执行失败等消息。               |
 
 ## Ref 方法
 
@@ -155,11 +161,22 @@ const snapshot = api.getSceneSnapshot();
 | `copySelectedObjects()`                      | 复制当前选中对象，返回数量。                          |
 | `pasteCopiedObjects()`                       | 粘贴已复制对象，返回新增对象数组。                    |
 | `importModelFile(file)`                      | 导入本地 `.glb/.gltf` 文件。                          |
-| `updateSceneObject(objectData)`              | 更新对象数据并同步 Three.js 对象。                    |
+| `updateSceneObject(objectData)`              | 更新对象数据并同步 Babylon.js 对象。                  |
 | `setObjectVisible(id, visible)`              | 设置对象显示或隐藏。                                  |
 | `applyCanvasSettings(canvas)`                | 应用画布设置。                                        |
 | `applyLightSettings(lights)`                 | 应用灯光设置。                                        |
 | `applyCameraSettings(camera)`                | 应用相机设置。                                        |
+| `getAnimationCatalog(locator)`               | 获取对象的自定义动画和 GLB 自带动画目录。             |
+| `playObjectAnimations(options)`              | 从头启动对象上全部已启用动画。                        |
+| `playAnimation(locator)`                     | 播放指定动画；暂停状态下继续播放。                    |
+| `pauseAnimation(locator)`                    | 暂停指定动画。                                        |
+| `resumeAnimation(locator)`                   | 继续指定动画。                                        |
+| `stopAnimation(locator)`                     | 停止指定动画，可通过 `restore` 控制是否恢复。         |
+| `restartAnimation(locator)`                  | 恢复基础姿态并从头播放指定动画。                      |
+| `seekAnimation(locator)`                     | 跳转到 `timeSeconds` 指定的时间。                     |
+| `getAnimationState(locator)`                 | 获取指定动画的当前运行状态。                          |
+| `stopAllAnimations(options)`                 | 停止全部或指定对象相关动画。                          |
+| `applyAnimationSettings(settings)`           | 应用场景动画总开关、全局速率和隐藏暂停策略。          |
 | `deleteObjects(ids)`                         | 删除指定对象。                                        |
 | `deleteSelected()`                           | 删除当前选中对象。                                    |
 
@@ -173,18 +190,24 @@ window.het3d;
 
 卸载组件时会恢复之前的 `window.het3d`。
 
-| 字段或方法                         | 说明                                  |
-| ---------------------------------- | ------------------------------------- |
-| `het3d.data`                       | 当前场景完整快照，未加载时为 `null`。 |
-| `het3d.active`                     | 当前选中对象数组。                    |
-| `het3d.setValue(payload)`          | 按对象 ID 修改对象字段。              |
-| `het3d.showDevicePopover(options)` | 触发设备弹窗动作，返回 `true/false`。 |
-| `het3d.explodeModel(options)`      | 触发模型展开动作，返回 `true/false`。 |
-| `het3d.on(name, handler)`          | 监听自定义事件，返回取消监听函数。    |
-| `het3d.off(name, handler)`         | 移除自定义事件监听。                  |
-| `het3d.once(name, handler)`        | 只监听一次自定义事件。                |
-| `het3d.emit(name, payload)`        | 发送自定义事件给外部监听者。          |
-| `het3d.utils.cloneData(value)`     | 深拷贝工具。                          |
+| 字段或方法                                                                              | 说明                                  |
+| --------------------------------------------------------------------------------------- | ------------------------------------- |
+| `het3d.data`                                                                            | 当前场景完整快照，未加载时为 `null`。 |
+| `het3d.active`                                                                          | 当前选中对象数组。                    |
+| `het3d.setValue(payload)`                                                               | 按对象 ID 修改对象字段。              |
+| `het3d.showDevicePopover(options)`                                                      | 触发设备弹窗动作，返回 `true/false`。 |
+| `het3d.explodeModel(options)`                                                           | 触发模型展开动作，返回 `true/false`。 |
+| `het3d.getAnimationCatalog(locator)`                                                    | 获取对象动画目录。                    |
+| `het3d.playObjectAnimations(options)`                                                   | 启动对象全部已启用动画。              |
+| `het3d.playAnimation(locator)` / `pauseAnimation(locator)` / `resumeAnimation(locator)` | 控制单个动画。                        |
+| `het3d.stopAnimation(locator)` / `restartAnimation(locator)` / `seekAnimation(locator)` | 停止、重播或跳转单个动画。            |
+| `het3d.getAnimationState(locator)` / `stopAllAnimations(options)`                       | 查询状态或批量停止。                  |
+| `het3d.applyAnimationSettings(settings)`                                                | 应用场景动画设置。                    |
+| `het3d.on(name, handler)`                                                               | 监听自定义事件，返回取消监听函数。    |
+| `het3d.off(name, handler)`                                                              | 移除自定义事件监听。                  |
+| `het3d.once(name, handler)`                                                             | 只监听一次自定义事件。                |
+| `het3d.emit(name, payload)`                                                             | 发送自定义事件给外部监听者。          |
+| `het3d.utils.cloneData(value)`                                                          | 深拷贝工具。                          |
 
 示例：
 
@@ -241,7 +264,7 @@ context.het3d.explodeModel({
 
 ```js
 {
-    (object, object3d, event, trigger, scene, camera, controls, THREE, het3d);
+    (object, object3d, event, trigger, scene, camera, controls, BABYLON, het3d);
 }
 ```
 
@@ -397,6 +420,11 @@ const sceneData = {
         processor: "",
         intervalSeconds: 10,
     },
+    animationSettings: {
+        enabled: true,
+        globalSpeed: 1,
+        pauseWhenHidden: true,
+    },
     editorState: {
         selectedIds: [],
         transformMode: "translate",
@@ -429,6 +457,7 @@ const sceneData = {
   dataBindings: [],
   events: [],
   animations: [],
+  builtInAnimations: [],
   metadata: null,
   visible: true,
   locked: false,
@@ -437,17 +466,19 @@ const sceneData = {
 
 常用字段说明：
 
-| 字段           | 说明                                                                                                           |
-| -------------- | -------------------------------------------------------------------------------------------------------------- |
-| `id`           | 对象唯一 ID，`setValue`、选中、删除都依赖它。                                                                  |
-| `type`         | 支持 `box`、`sphere`、`cylinder`、`plane`、`icon`、`image`、`importedModel`、`importedLayer`、`importedMesh`。 |
-| `position`     | 位置 `{ x, y, z }`。                                                                                           |
-| `rotation`     | 欧拉角 `{ x, y, z }`，单位为弧度。                                                                             |
-| `scale`        | 缩放 `{ x, y, z }`。                                                                                           |
-| `modelPath`    | `importedModel` 可直接使用的模型 URL 或 data URL。                                                             |
-| `assetId`      | 配合 `assetLoader` 获取模型资源。                                                                              |
-| `dataBindings` | 设备或接口数据绑定配置。                                                                                       |
-| `events`       | 对象交互事件配置。                                                                                             |
+| 字段                | 说明                                                                                                           |
+| ------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `id`                | 对象唯一 ID，`setValue`、选中、删除都依赖它。                                                                  |
+| `type`              | 支持 `box`、`sphere`、`cylinder`、`plane`、`icon`、`image`、`importedModel`、`importedLayer`、`importedMesh`。 |
+| `position`          | 位置 `{ x, y, z }`。                                                                                           |
+| `rotation`          | 欧拉角 `{ x, y, z }`，单位为弧度。                                                                             |
+| `scale`             | 缩放 `{ x, y, z }`。                                                                                           |
+| `modelPath`         | `importedModel` 可直接使用的模型 URL 或 data URL。                                                             |
+| `assetId`           | 配合 `assetLoader` 获取模型资源。                                                                              |
+| `dataBindings`      | 设备或接口数据绑定配置。                                                                                       |
+| `events`            | 对象交互事件配置。                                                                                             |
+| `animations`        | 自定义动画配置。旧数据缺少 `autoPlay` 时按 `true` 兼容。                                                       |
+| `builtInAnimations` | 导入模型的 GLB 片段引用与播放设置，不保存关键帧或运行时对象。                                                  |
 
 ## 数据绑定
 
@@ -520,6 +551,22 @@ const sceneData = {
 }
 ```
 
+动画控制事件：
+
+```js
+{
+  id: "event_animation",
+  name: "启动动画",
+  triggerType: "leftClick",
+  actionType: "animationControl",
+  animationControl: {
+    targetObjectId: "",
+  },
+}
+```
+
+`targetObjectId` 缺省、为空或为 `self` 时使用事件所属对象。触发后从头启动目标对象全部已启用动画；该动作不接受动画来源、动画 ID、命令或停止策略字段。
+
 支持的 `triggerType`：
 
 | 值                | 说明                           |
@@ -530,11 +577,47 @@ const sceneData = {
 
 支持的 `actionType`：
 
-| 值               | 说明                                 |
-| ---------------- | ------------------------------------ |
-| `customFunction` | 执行 `code` 中的 JavaScript 函数体。 |
-| `devicePopover`  | 触发设备弹窗。                       |
-| `modelExplode`   | 触发模型展开或收起。                 |
+| 值                 | 说明                                 |
+| ------------------ | ------------------------------------ |
+| `customFunction`   | 执行 `code` 中的 JavaScript 函数体。 |
+| `devicePopover`    | 触发设备弹窗。                       |
+| `modelExplode`     | 触发模型展开或收起。                 |
+| `animationControl` | 从头启动目标对象全部已启用动画。     |
+
+## 动画配置
+
+自定义动画保存在对象的 `animations` 数组中。运行时只修改 Babylon.js 节点，不逐帧写回场景对象、不触发 `scene-change`，也不写入存储。
+
+```js
+{
+  schemaVersion: 1,
+  id: "animation_move",
+  name: "移动",
+  enabled: true,
+  targetId: "self",
+  autoPlay: true,
+  delaySeconds: 0,
+  loopMode: "normal",
+  loopCount: 1,
+  speed: 1,
+  endState: "restore",
+  easing: "linear",
+  segments: [{
+    id: "segment_1",
+    startTime: 0,
+    endTime: 1,
+    easing: "easeInOut",
+    properties: [{
+      id: "property_1",
+      property: "position.x",
+      startValue: 0,
+      endValue: 1,
+    }],
+  }],
+}
+```
+
+动画 locator 使用 `{ objectId, sourceType, animationId }`。`sourceType` 为 `custom` 或 `builtIn`；跳转时额外传入 `timeSeconds`，停止时可额外传入 `restore`。
 
 ## 模型资源适配器
 
@@ -1162,9 +1245,24 @@ window.het3d.on("modelExplode", {
 
 ### 大模型性能说明
 
-模型展开动画运行期间，het3d 每帧只更新参与对象的 Three.js `Object3D.position` 和必要矩阵状态，不会每帧写回完整场景数据、重算父模型包围盒或重复触发 `scene-change`。动画完成后才同步最终位置到场景数据。
+模型展开动画运行期间，het3d 每帧只更新参与对象的 Babylon.js 节点位置和必要矩阵状态，不会每帧写回完整场景数据、重算父模型包围盒或重复触发 `scene-change`。动画完成后才同步最终位置到场景数据。
 
 导入图层作为展开目标时，图层根节点保持可更新矩阵；内部静态网格仍可保留运行时优化。父导入模型的透明点击代理会在展开或收起完成后根据子图层最新包围盒刷新，保证展开后点击任意可见子图层区域仍能命中父模型事件并再次触发收起。
+
+## 源码结构
+
+`src/het3d/Het3d.vue` 负责 Vue 生命周期、Babylon.js 主循环、相机/选择交互和公共方法组装。独立业务状态拆分到以下模块，并通过访问器和回调注入场景依赖：
+
+| 模块                     | 职责                                            |
+| ------------------------ | ----------------------------------------------- |
+| `animationRuntime.js`    | 自定义动画和 GLB 动画实例、状态、冲突与播放控制 |
+| `sceneDataPolling.js`    | HTTPS 请求、轮询、数据绑定更新和值变化事件      |
+| `modelExplodeRuntime.js` | 模型炸开配置、展开状态和逐帧位置求值            |
+| `modelImportRuntime.js`  | GLB 加载、层级映射、缓存、材质覆盖和旧数据迁移  |
+| `objectEventRuntime.js`  | 对象事件分发、自定义代码执行和设备弹窗状态      |
+| `sceneVisuals.js`        | 材质、动态纹理、对象元数据和坐标转换            |
+
+运行时模块不持有 Vue 组件实例，只通过构造参数访问当前场景，便于独立测试和继续拆分。
 
 ## 构建和发包
 

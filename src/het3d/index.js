@@ -5,6 +5,7 @@ export * from "../utils/het3dApi";
 export * from "../utils/sceneObjects";
 export * from "../utils/httpsSceneData";
 export * from "../utils/eventBus";
+export * from "../utils/sceneAnimations.js";
 
 export { Het3d };
 

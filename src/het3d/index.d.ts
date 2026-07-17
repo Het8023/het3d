@@ -17,6 +17,32 @@ export interface Het3dMessage {
     detail?: unknown;
 }
 
+export type Het3dAnimationSourceType = "custom" | "builtIn";
+export type Het3dAnimationStatus =
+    | "idle"
+    | "delayed"
+    | "playing"
+    | "paused"
+    | "completed"
+    | "stopped"
+    | "error";
+
+export interface Het3dAnimationLocator {
+    objectId: string;
+    sourceType: Het3dAnimationSourceType;
+    animationId: string;
+    restart?: boolean;
+    restore?: boolean;
+}
+
+export interface Het3dAnimationResult {
+    ok: boolean;
+    runtimeId?: string;
+    code?: string;
+    message?: string;
+    state?: Record<string, unknown>;
+}
+
 export type Het3dEventHandler<T = unknown> = (payload: T) => unknown;
 
 export interface Het3dEventBus {
@@ -50,6 +76,17 @@ export interface Het3dApi {
     setValue(payload: Record<string, unknown> & { id: string }): Record<string, unknown>;
     showDevicePopover(options?: Record<string, unknown>): boolean;
     explodeModel(options?: Record<string, unknown>): boolean;
+    getAnimationCatalog(options: { objectId: string }): Record<string, unknown>;
+    playObjectAnimations(options: { objectId: string; restart?: boolean }): Het3dAnimationResult;
+    playAnimation(options: Het3dAnimationLocator): Het3dAnimationResult;
+    pauseAnimation(options: Het3dAnimationLocator): Het3dAnimationResult;
+    resumeAnimation(options: Het3dAnimationLocator): Het3dAnimationResult;
+    stopAnimation(options: Het3dAnimationLocator): Het3dAnimationResult;
+    restartAnimation(options: Het3dAnimationLocator): Het3dAnimationResult;
+    seekAnimation(options: Het3dAnimationLocator & { timeSeconds: number }): Het3dAnimationResult;
+    getAnimationState(options: Het3dAnimationLocator): Het3dAnimationResult;
+    stopAllAnimations(options?: { objectId?: string; restore?: boolean }): Het3dAnimationResult;
+    applyAnimationSettings(settings: Record<string, unknown>): Record<string, unknown>;
     on(type: "modelExplode", payload: Record<string, unknown>): boolean;
     on(type: string, handler: Het3dEventHandler): () => void;
     off(type: string, handler: Het3dEventHandler): void;
@@ -86,5 +123,19 @@ export declare function cloneData<T>(value: T): T;
 export declare function createId(prefix?: string): string;
 export declare function normalizeScene(scene: Record<string, unknown>): Record<string, unknown>;
 export declare function normalizeSceneModelSources<T>(scene: T): T;
+export declare const animationPropertyPaths: string[];
+export declare function defaultAnimationSettings(): Record<string, unknown>;
+export declare function normalizeAnimationSettings(value?: unknown): Record<string, unknown>;
+export declare function normalizeCustomAnimation(value?: unknown): Record<string, unknown>;
+export declare function normalizeCustomAnimations(value?: unknown): Record<string, unknown>[];
+export declare function normalizeBuiltInAnimation(value?: unknown): Record<string, unknown>;
+export declare function normalizeBuiltInAnimations(value?: unknown): Record<string, unknown>[];
+export declare function normalizeAnimationControl(value?: unknown): { targetObjectId: string };
+export declare function resolveAnimationControlTarget(ownerId: string, value?: unknown): string;
+export declare function validateCustomAnimation(value?: unknown): {
+    valid: boolean;
+    errors: Array<{ path: string; code: string; message: string }>;
+    value: Record<string, unknown>;
+};
 
 export default Het3d;
